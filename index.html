@@ -146,6 +146,7 @@ function FactoryPanel({ factory, children }) {
 function App() {
   const [appError, setAppError] = React.useState(null);
   const [selectedDate, setSelectedDate] = useState(todayStr());
+  const isToday = selectedDate === todayStr();
   const [activeSection, setActiveSection] = useState("transporte");
   const [dayData, setDayData] = useState({ agrela: {}, moras: {} });
   const [loading, setLoading] = useState(true);
