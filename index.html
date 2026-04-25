@@ -4,6 +4,8 @@
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
 <title>Diario Fábrica</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCI+CiAgPHJlY3Qgd2lkdGg9IjY0IiBoZWlnaHQ9IjY0IiByeD0iMTIiIGZpbGw9IiMxMTExMTYiLz4KICA8cmVjdCB4PSI0IiB5PSI0IiB3aWR0aD0iNTYiIGhlaWdodD0iNTYiIHJ4PSIxMCIgZmlsbD0iIzFBMUEyMiIgc3Ryb2tlPSIjRjU5RTBCIiBzdHJva2Utd2lkdGg9IjIiLz4KICA8dGV4dCB4PSIzMiIgeT0iMzgiIGZvbnQtZmFtaWx5PSJBcmlhbCBCbGFjaywgc2Fucy1zZXJpZiIgZm9udC1zaXplPSIyNCIgZm9udC13ZWlnaHQ9IjkwMCIgZmlsbD0iI0Y1OUUwQiIgdGV4dC1hbmNob3I9Im1pZGRsZSIgbGV0dGVyLXNwYWNpbmc9Ii0xIj5ERjwvdGV4dD4KICA8cmVjdCB4PSIxMCIgeT0iNDQiIHdpZHRoPSI0NCIgaGVpZ2h0PSIzIiByeD0iMS41IiBmaWxsPSIjRjU5RTBCIiBvcGFjaXR5PSIwLjQiLz4KICA8cmVjdCB4PSIxMCIgeT0iNDkiIHdpZHRoPSIyOCIgaGVpZ2h0PSIyIiByeD0iMSIgZmlsbD0iI0Y1OUUwQiIgb3BhY2l0eT0iMC4yIi8+Cjwvc3ZnPg==" />
+<link rel="apple-touch-icon" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCI+CiAgPHJlY3Qgd2lkdGg9IjY0IiBoZWlnaHQ9IjY0IiByeD0iMTIiIGZpbGw9IiMxMTExMTYiLz4KICA8cmVjdCB4PSI0IiB5PSI0IiB3aWR0aD0iNTYiIGhlaWdodD0iNTYiIHJ4PSIxMCIgZmlsbD0iIzFBMUEyMiIgc3Ryb2tlPSIjRjU5RTBCIiBzdHJva2Utd2lkdGg9IjIiLz4KICA8dGV4dCB4PSIzMiIgeT0iMzgiIGZvbnQtZmFtaWx5PSJBcmlhbCBCbGFjaywgc2Fucy1zZXJpZiIgZm9udC1zaXplPSIyNCIgZm9udC13ZWlnaHQ9IjkwMCIgZmlsbD0iI0Y1OUUwQiIgdGV4dC1hbmNob3I9Im1pZGRsZSIgbGV0dGVyLXNwYWNpbmc9Ii0xIj5ERjwvdGV4dD4KICA8cmVjdCB4PSIxMCIgeT0iNDQiIHdpZHRoPSI0NCIgaGVpZ2h0PSIzIiByeD0iMS41IiBmaWxsPSIjRjU5RTBCIiBvcGFjaXR5PSIwLjQiLz4KICA8cmVjdCB4PSIxMCIgeT0iNDkiIHdpZHRoPSIyOCIgaGVpZ2h0PSIyIiByeD0iMSIgZmlsbD0iI0Y1OUUwQiIgb3BhY2l0eT0iMC4yIi8+Cjwvc3ZnPg==" />
 <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
 <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -1528,7 +1530,10 @@ function App() {
     <div style={{ minHeight:"100vh", background: "#111116", color: "#FFFFFF", fontFamily:"'Outfit','DM Sans',system-ui,sans-serif", display:"flex", flexDirection:"column" }}>
       {/* Header */}
       <div style={{ background: "#111116", borderBottom: "1px solid #44444F", padding:"12px 20px", display:"flex", alignItems:"center", justifyContent:"space-between", position:"sticky", top:0, zIndex:10 }}>
-        <div style={{ fontSize:"18px", fontWeight:700, color:"#F59E0B", letterSpacing:"0.06em" }}>⬛ DIARIO</div>
+        <div style={{ display:"flex", alignItems:"center", gap:"8px" }}>
+            <img src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCI+CiAgPHJlY3Qgd2lkdGg9IjY0IiBoZWlnaHQ9IjY0IiByeD0iMTIiIGZpbGw9IiMxMTExMTYiLz4KICA8cmVjdCB4PSI0IiB5PSI0IiB3aWR0aD0iNTYiIGhlaWdodD0iNTYiIHJ4PSIxMCIgZmlsbD0iIzFBMUEyMiIgc3Ryb2tlPSIjRjU5RTBCIiBzdHJva2Utd2lkdGg9IjIiLz4KICA8dGV4dCB4PSIzMiIgeT0iMzgiIGZvbnQtZmFtaWx5PSJBcmlhbCBCbGFjaywgc2Fucy1zZXJpZiIgZm9udC1zaXplPSIyNCIgZm9udC13ZWlnaHQ9IjkwMCIgZmlsbD0iI0Y1OUUwQiIgdGV4dC1hbmNob3I9Im1pZGRsZSIgbGV0dGVyLXNwYWNpbmc9Ii0xIj5ERjwvdGV4dD4KICA8cmVjdCB4PSIxMCIgeT0iNDQiIHdpZHRoPSI0NCIgaGVpZ2h0PSIzIiByeD0iMS41IiBmaWxsPSIjRjU5RTBCIiBvcGFjaXR5PSIwLjQiLz4KICA8cmVjdCB4PSIxMCIgeT0iNDkiIHdpZHRoPSIyOCIgaGVpZ2h0PSIyIiByeD0iMSIgZmlsbD0iI0Y1OUUwQiIgb3BhY2l0eT0iMC4yIi8+Cjwvc3ZnPg==" style={{ width:"28px", height:"28px" }} alt="DF" />
+            <span style={{ fontSize:"18px", fontWeight:700, color:"#F59E0B", letterSpacing:"0.06em" }}>DIARIO FÁBRICA</span>
+          </div>
         <div style={{ display:"flex", alignItems:"center", gap:"8px" }}>
           <button onClick={() => setSelectedDate(offsetDate(selectedDate,-1))} style={{ background:"#27272A", border:"none", color:"#FFFFFF", borderRadius:"6px", padding:"5px 10px", cursor:"pointer", fontSize:"16px" }}>‹</button>
           <div style={{ background:"#27272A", borderRadius:"6px", padding:"5px 14px", fontSize:"13px", fontWeight:600, color: isToday?"#F59E0B":"#E5E7EB", minWidth:"100px", textAlign:"center" }}>
