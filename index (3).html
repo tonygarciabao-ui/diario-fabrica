@@ -1,0 +1,1693 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Diario Fábrica</title>
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #1E1E24; color: #F3F4F6; font-family: 'DM Mono','Courier New',monospace; }
+  input, textarea, button { font-family: inherit; }
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-track { background: #0D0D12; }
+  ::-webkit-scrollbar-thumb { background: #4A4A5A; border-radius: 4px; border: 2px solid #0D0D12; }
+  ::-webkit-scrollbar-thumb:hover { background: #6A6A7A; }
+  ::-webkit-scrollbar-corner { background: #0D0D12; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+
+
+// ── Constants ─────────────────────────────────────────────────────
+const FACTORIES = [
+  { id: "agrela", label: "A Grela", color: "#F59E0B" },
+  { id: "moras",  label: "Moras",   color: "#38BDF8" },
+];
+
+const SECTIONS = [
+  { id: "transporte", label: "Cargas", icon: "🚛", color: "#F59E0B" },
+  { id: "centros", label: "Centros Log.", icon: "🏬", color: "#06B6D4" },
+  { id: "planificacion", label: "Planificación", icon: "📅", color: "#10B981" },
+  { id: "almacen",       label: "Almacén Auto.", icon: "🏭", color: "#EF4444" },
+  { id: "stocks_agrela",  label: "Stocks Grela",  icon: "📦", color: "#F59E0B" },
+  { id: "stocks_moras",   label: "Stocks Moras",   icon: "📦", color: "#38BDF8" },
+];
+
+const ENTRY_SECTIONS = ["almacen","transporte","stocks"];
+
+const sortCriticos = (arr) => [...(arr||[])].map(r => ({...r, diff: r.diff??((r.fisico??0)-(r.bloq??0)-(r.pedidos??0))})).sort((a,b) => { const aNum=/^\d+$/.test(a.cod), bNum=/^\d+$/.test(b.cod); if(aNum&&!bNum)return -1; if(!aNum&&bNum)return 1; if(aNum&&bNum)return parseInt(a.cod)-parseInt(b.cod); return a.cod.localeCompare(b.cod); });
+
+// ── Helpers ───────────────────────────────────────────────────────
+function formatDate(str) {
+  const [y, m, d] = str.split("-");
+  return `${d}/${m}/${y}`;
+}
+function todayStr() { return new Date().toISOString().split("T")[0]; }
+function offsetDate(str, days) {
+  const d = new Date(str); d.setDate(d.getDate() + days);
+  return d.toISOString().split("T")[0];
+}
+function weekOf(str) {
+  const d = new Date(str);
+  const mon = new Date(d); mon.setDate(d.getDate() - ((d.getDay() + 6) % 7));
+  const sun = new Date(mon); sun.setDate(mon.getDate() + 6);
+  return `${mon.toISOString().split("T")[0]}__${sun.toISOString().split("T")[0]}`;
+}
+function monthOf(str) { return str.slice(0, 7); }
+
+// ── Firestore helpers ─────────────────────────────────────────────
+async function dbGet(date) {
+  try {
+    const doc = await db.collection("dias").doc(date).get();
+    if (doc.exists) return doc.data();
+    return { agrela: {}, moras: {} };
+  } catch(e) { console.error(e); return { agrela: {}, moras: {} }; }
+}
+async function dbSet(date, data) {
+  try {
+    await db.collection("dias").doc(date).set(data);
+  } catch(e) { console.error(e); }
+}
+async function dbList() {
+  try {
+    return snap.docs.map(d => ({ date: d.id, data: d.data() }));
+  } catch(e) { console.error(e); return []; }
+}
+
+// ── CSV export ────────────────────────────────────────────────────
+function exportCSV(allDays) {
+  const rows = [["Fecha","Fábrica","Sección","Título","Texto","Hora","Cargados","Pendientes","Nocturnas","Stock%"]];
+  allDays.forEach(({ date, data }) => {
+    FACTORIES.forEach(fac => {
+      const fd = data[fac.id] || {};
+      const tm = fd.transporteMeta || {};
+      const sm = fd.stocksMeta || {};
+      if (Object.values(tm).some(Boolean))
+        rows.push([formatDate(date), fac.label, "Transporte", "", tm.notas||"", "", tm.cargados||"", tm.pendientes||"", tm.nocturnas||"", ""]);
+      if (sm.nivel || sm.alertas)
+        rows.push([formatDate(date), fac.label, "Stocks", "", sm.alertas||"", "", "", "", "", sm.nivel||""]);
+      ENTRY_SECTIONS.forEach(secId => {
+        (fd[secId]||[]).forEach(e => {
+          rows.push([formatDate(date), fac.label, secId, e.titulo||"", e.texto||"", e.hora||"", "", "", "", ""]);
+        });
+      });
+    });
+  });
+  const csv = rows.map(r => r.map(c => `"${String(c).replace(/"/g,'""')}"`).join(",")).join("\n");
+  const blob = new Blob(["\uFEFF"+csv], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a"); a.href = url; a.download = "diario_export.csv"; a.click();
+  URL.revokeObjectURL(url);
+}
+
+// ── Small components ──────────────────────────────────────────────
+const { useState, useEffect, useCallback } = React;
+
+function Badge({ count, color }) {
+  if (!count) return null;
+  return <span style={{ background: color, color: "#fff", borderRadius: "9999px", fontSize: "10px", fontWeight: 700, padding: "1px 6px", marginLeft: "5px", display: "inline-block", minWidth: "18px", textAlign: "center" }}>{count}</span>;
+}
+
+function EntryList({ entries = [], onDelete, color }) {
+  if (!entries.length) return <p style={{ color: "#52525B", fontStyle: "italic", fontSize: "12px", margin: "6px 0 0" }}>Sin entradas</p>;
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: "5px", marginTop: "8px" }}>
+      {entries.map((e, i) => (
+        <div key={i} style={{ background: "#0D0D0F", border: "1px solid #44444F", borderLeft: `3px solid ${color}`, borderRadius: "6px", padding: "7px 10px", display: "flex", justifyContent: "space-between", gap: "8px" }}>
+          <div style={{ flex: 1 }}>
+            {e.titulo && <div style={{ color: "#F3F4F6", fontWeight: 600, fontSize: "12px" }}>{e.titulo}</div>}
+            {e.texto  && <div style={{ color: "#9CA3AF", fontSize: "12px", marginTop: e.titulo ? "2px" : 0 }}>{e.texto}</div>}
+            <div style={{ color: "#52525B", fontSize: "10px", marginTop: "3px" }}>{e.hora}</div>
+          </div>
+          {onDelete && <button onClick={() => onDelete(i)} style={{ background: "none", border: "none", color: "#52525B", cursor: "pointer", fontSize: "18px", padding: 0, lineHeight: 1 }}>×</button>}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function FactoryPanel({ factory, children }) {
+  return (
+    <div style={{ flex: 1, minWidth: 0, background: "#18181B", border: `1px solid ${factory.color}33`, borderTop: `3px solid ${factory.color}`, borderRadius: "10px", padding: "14px" }}>
+      <div style={{ fontSize: "11px", fontWeight: 700, color: factory.color, textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: "12px" }}>🏭 {factory.label}</div>
+      {children}
+    </div>
+  );
+}
+
+// ── Main App ──────────────────────────────────────────────────────
+function App() {
+  const [appError, setAppError] = React.useState(null);
+  const [selectedDate, setSelectedDate] = useState(todayStr());
+  const [activeSection, setActiveSection] = useState("transporte");
+  const [dayData, setDayData] = useState({ agrela: {}, moras: {} });
+  const [loading, setLoading] = useState(true);
+  const [savedMsg, setSavedMsg] = useState("");
+  const [histDays, setHistDays] = useState([]);
+  const [showClientes, setShowClientes] = useState(true);
+  const [showPlan, setShowPlan] = useState(true);
+  const [showCentrosClientes, setShowCentrosClientes] = useState(true);
+  const [paleInputs, setPaleInputs] = useState({});
+  const setPaleInput = (cod, field, val) => setPaleInputs(p => ({...p, [cod]:{...(p[cod]||{}), [field]:val}}));
+  const [palesConfig, setPalesConfig] = useState({pckCj:"", unidPale:""});
+  const [showConfig, setShowConfig] = useState(false);
+  const [planData, setPlanData] = useState([]);
+  const [planFecha, setPlanFecha] = useState("");
+  const [centrosData, setCentrosData] = useState({moras:null, ar2:null, ar1:null});
+  const [centrosFecha, setCentrosFecha] = useState({moras:"", ar2:"", ar1:""});
+  const [cargasData, setCargasData] = useState({agrela:null, moras:null});
+  const [cargasFecha, setCargasFecha] = useState({agrela:"", moras:""});
+  const [openSections, setOpenSections] = useState({agrela:{pendientes:false, registrados:false, enCarga:false, finCarga:false, arrastrados:false}, moras:{pendientes:false, registrados:false, enCarga:false, finCarga:false, arrastrados:false}});
+  const [arrastradosPaste, setArrastradosPaste] = useState({agrela:"", moras:""});
+  const toggleSection = (fid, key) => setOpenSections(p => ({...p, [fid]:{...p[fid], [key]:!p[fid][key]}}));
+  const defaultSitu = [{label:"Llenando",bg:"#0a3d1f",txt:"#6ee7a0",border:"#22c55e"},{label:"Pendiente",bg:"#3d2200",txt:"#fcd34d",border:"#f59e0b"},{label:"Avería",bg:"#3d0f0f",txt:"#fca5a5",border:"#ef4444"},{label:"No llena",bg:"#22103d",txt:"#c4b5fd",border:"#8b5cf6"}];
+  const [situOpciones, setSituOpcionesRaw] = useState(() => { try { const s = localStorage.getItem("diario_situ"); return s ? JSON.parse(s) : defaultSitu; } catch(e) { return defaultSitu; } });
+  const setSituOpciones = (v) => { const next = typeof v === "function" ? v(situOpciones) : v; setSituOpcionesRaw(next); try { localStorage.setItem("diario_situ", JSON.stringify(next)); } catch(e) {} };
+  const defaultGrupos = ["G1","G2","G3","G4","G5","G6","G7","G8","G9"];
+  const [grupoOpciones, setGrupoOpcionesRaw] = useState(() => { try { const s = localStorage.getItem("diario_grupos"); return s ? JSON.parse(s) : defaultGrupos; } catch(e) { return defaultGrupos; } });
+  const setGrupoOpciones = (v) => { const next = typeof v === "function" ? v(grupoOpciones) : v; setGrupoOpcionesRaw(next); try { localStorage.setItem("diario_grupos", JSON.stringify(next)); } catch(e) {} };
+  const defaultDetalle = ["Mercancía justa","Sin stock","Bloqueado","En tránsito","Avería línea","Otros"];
+  const [detalleOpciones, setDetalleOpcionesRaw] = useState(() => { try { const s = localStorage.getItem("diario_detalle"); return s ? JSON.parse(s) : defaultDetalle; } catch(e) { return defaultDetalle; } });
+  const setDetalleOpciones = (v) => { const next = typeof v === "function" ? v(detalleOpciones) : v; setDetalleOpcionesRaw(next); try { localStorage.setItem("diario_detalle", JSON.stringify(next)); } catch(e) {} };
+  const [configEdit, setConfigEdit] = useState({ situ:"", grupo:"" });
+  const [histLoading, setHistLoading] = useState(false);
+  const [histView, setHistView] = useState("list");
+  const [searchQ, setSearchQ] = useState("");
+
+  const emptyTransport = () => ({ totales: "", cargados: "", pendientes: "", nocturnas: "", notas: "" });
+  const emptyStocks    = () => ({ nivel: "", alertas: "" });
+  const emptyEntry     = () => ({ titulo: "", texto: "" });
+
+  const [transport, setTransport] = useState({ agrela: emptyTransport(), moras: emptyTransport() });
+  const [stocks, setStocks]       = useState({ agrela: emptyStocks(),    moras: emptyStocks()    });
+  const [entry, setEntry]         = useState({ agrela: emptyEntry(),     moras: emptyEntry()     });
+
+  const showSaved = (msg = "✓ Guardado") => { setSavedMsg(msg); setTimeout(() => setSavedMsg(""), 2000); };
+
+  const loadData = useCallback(async () => {
+    setLoading(true);
+    try {
+    const data = await dbGet(selectedDate);
+    data.agrela = data.agrela || {}; data.moras = data.moras || {};
+    setDayData(data);
+    setTransport({
+      agrela: { totales: data.agrela.transporteMeta?.totales??"", cargados: data.agrela.transporteMeta?.cargados??"", pendientes: data.agrela.transporteMeta?.pendientes??"", nocturnas: data.agrela.transporteMeta?.nocturnas??"", notas: data.agrela.transporteMeta?.notas??"" },
+      moras:  { totales: data.moras.transporteMeta?.totales??"",  cargados: data.moras.transporteMeta?.cargados??"",  pendientes: data.moras.transporteMeta?.pendientes??"",  nocturnas: data.moras.transporteMeta?.nocturnas??"",  notas: data.moras.transporteMeta?.notas??""  },
+    });
+    setStocks({
+      agrela: { nivel: data.agrela.stocksMeta?.nivel??"", alertas: data.agrela.stocksMeta?.alertas??"" },
+      moras:  { nivel: data.moras.stocksMeta?.nivel??"",  alertas: data.moras.stocksMeta?.alertas??""  },
+    });
+    } catch(e) { console.error("loadData error:", e); }
+    finally { setLoading(false); }
+  }, [selectedDate]);
+
+  useEffect(() => { loadData(); }, [loadData]);
+
+  useEffect(() => {
+    if (activeSection === "historico") {
+      setHistLoading(true);
+      dbList().then(days => { setHistDays(days); setHistLoading(false); });
+    }
+  }, [activeSection]);
+  const addEntry = async (section, fid) => {
+    const e = entry[fid]; if (!e.titulo && !e.texto) return;
+    const hora = new Date().toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" });
+    await saveData({ ...dayData, [fid]: { ...dayData[fid], [section]: [...(dayData[fid][section]||[]), { ...e, hora }] } });
+    setEntry(p => ({ ...p, [fid]: emptyEntry() }));
+    showSaved("✓ Anotación añadida");
+  };
+  const deleteEntry = async (section, fid, idx) => {
+    await saveData({ ...dayData, [fid]: { ...dayData[fid], [section]: (dayData[fid][section]||[]).filter((_,i) => i !== idx) } });
+  };
+
+  const sectionCount = (secId) => FACTORIES.reduce((n,f) => n + (dayData[f.id]?.[secId]?.length||0), 0);
+
+  const C = {
+    input:    { width:"100%", background:"#161620", border:"1px solid #2A2A3A", borderRadius:"8px", color:"#F3F4F6", padding:"8px 12px", fontSize:"12px", outline:"none", transition:"border-color 0.2s" },
+    textarea: { width:"100%", background:"#161620", border:"1px solid #2A2A3A", borderRadius:"8px", color:"#F3F4F6", padding:"8px 12px", fontSize:"12px", outline:"none", resize:"vertical", minHeight:"60px" },
+    btn:  col => ({ background:col, border:"none", color:"#111", borderRadius:"8px", padding:"9px 18px", cursor:"pointer", fontWeight:700, fontSize:"12px", letterSpacing:"0.04em", fontFamily:"inherit", transition:"all 0.15s" }),
+    btnO: col => ({ background:"transparent", border:`1px solid ${col}44`, color:col, borderRadius:"8px", padding:"8px 16px", cursor:"pointer", fontWeight:600, fontSize:"12px", letterSpacing:"0.04em", fontFamily:"inherit", transition:"all 0.15s" }),
+    lbl:  { fontSize:"10px", color:"#9CA3AF", textTransform:"uppercase", letterSpacing:"0.1em", marginBottom:"6px", fontWeight:600 },
+    div:  { borderTop:"1px solid #1E1E2A", paddingTop:"12px", marginTop:"6px" },
+    row:  { display:"flex", gap:"16px" },
+  };
+
+  // ── Renderers ─────────────────────────────────────────────────────
+  // ── Planificación Envasado XLSX parser ──────────────────────────
+  const parsePlanXlsx = (arrayBuffer) => {
+    try {
+      const wb = XLSX.read(arrayBuffer, { type:"array" });
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      const range = XLSX.utils.decode_range(ws["!ref"] || "A1");
+      const getVal = (r, c) => { const cell = ws[XLSX.utils.encode_cell({r, c})]; return cell ? cell.v : null; };
+      const cleanStr = (v) => v ? String(v).replace(/\xa0/g,"").replace(/\s+/g," ").trim() : "";
+      // Parse Hi/Hf: "23:00       19/04" -> "23:00 19/04"
+      const parseHora = (v) => {
+        if (!v) return "";
+        const s = String(v).replace(/\xa0/g," ").replace(/\s+/g," ").trim();
+        return s;
+      };
+      // Normalize code: 700210 -> 0210, 70H210 -> H210, 700162 -> 0162
+      const normCode = (v) => {
+        if (!v) return "";
+        let s = String(v).trim().replace(/\xa0/g,"");
+        // Remove leading 70 or 700 prefix
+        if (/^700\d/.test(s)) return s.slice(3).padStart(4,"0");
+        if (/^70[A-Z]/.test(s)) return s.slice(2);
+        if (/^70\d/.test(s)) return s.slice(2).padStart(4,"0");
+        // Pure number like 700162
+        const n = parseFloat(s);
+        if (!isNaN(n)) return String(Math.round(n)).slice(-4).padStart(4,"0");
+        return s;
+      };
+
+      let currentGroup = "";
+      const rows = [];
+      for (let r = 0; r <= range.e.r; r++) {
+        const col2 = getVal(r, 2); // Column C
+        const col1 = getVal(r, 1); // Column B (CODIGO)
+        const col0 = getVal(r, 0); // Column A (DIA)
+        // Detect group header
+        if (col2 && typeof col2 === "string" && /^GRUPO \d+/i.test(String(col2))) {
+          currentGroup = cleanStr(col2);
+          continue;
+        }
+        // Skip header rows and empty rows
+        if (!col1 || String(col1) === "CODIGO" || col0 === "DIA") continue;
+        // Data row
+        const cod = normCode(col1);
+        const desc = cleanStr(getVal(r, 2));
+        const hi = parseHora(getVal(r, 7));   // Col H (index 7)
+        const hf = parseHora(getVal(r, 8));   // Col I (index 8)
+        const dia = col0 ? String(col0) : "";
+        if (cod && (hi || hf)) {
+          rows.push({ grupo: currentGroup, cod, desc, dia, hi, hf });
+        }
+      }
+      setPlanData(rows);
+      setPlanFecha(new Date().toLocaleTimeString("es-ES",{hour:"2-digit",minute:"2-digit"}));
+      showSaved("✓ Planificación cargada: " + rows.length + " turnos");
+    } catch(e) {
+      console.error("parsePlanXlsx error:", e);
+      showSaved("⚠️ Error al leer planificación: " + e.message);
+    }
+  };
+
+  // Get planning entries for a given cod
+  const getPlanForCod = (cod) => planData.filter(p => p.cod === cod);
+
+  // ── Cargas XLSX parser ──────────────────────────────────────────
+  const parseCargasXlsx = (arrayBuffer, fid) => {
+    try {
+      const wb = XLSX.read(arrayBuffer, { type:"array" });
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(ws, { header:1, defval:null, raw:true });
+      if (rows.length < 2) return;
+      const header = rows[0].map(h => h ? String(h).trim() : "");
+      const iStatus    = header.findIndex(h => h.includes("Transp") && h.includes("Status"));
+      const iTransp    = header.findIndex(h => h.includes("Número de transporte"));
+      const iCliente   = header.findIndex(h => h.includes("Nombre Destinatario"));
+      const iInicio    = header.findIndex(h => h.includes("Inicio carga planificada"));
+      const iFin       = header.findIndex(h => h.includes("Fin de carga planificada"));
+      const iTransport = header.findIndex(h => h.includes("Nombre transportista"));
+      const iFechaEnt  = header.findIndex(h => h.includes("Fecha pref") || h.includes("Fecha de entrega"));
+      const seenTransp = new Set();
+      const camiones = [];
+      rows.slice(1).forEach(row => {
+        const status = row[iStatus] ? parseInt(String(row[iStatus])) : null;
+        const nTransp = row[iTransp] ? String(row[iTransp]).trim() : null;
+        if (!status || !nTransp) return;
+        // Dedup by transporte number
+        const isDup = seenTransp.has(nTransp);
+        if (!isDup) seenTransp.add(nTransp);
+        camiones.push({
+          status,
+          nTransp,
+          cliente:    row[iCliente]   ? String(row[iCliente]).trim()   : "",
+          inicio:     row[iInicio]    ? String(row[iInicio]).trim()    : "",
+          fin:        row[iFin]       ? String(row[iFin]).trim()       : "",
+          transport:  row[iTransport] ? String(row[iTransport]).trim() : "",
+          fechaEnt: (() => {
+            const v = row[iFechaEnt];
+            if (!v) return "";
+            if (v instanceof Date) return v.toLocaleDateString("es-ES",{day:"2-digit",month:"2-digit",year:"2-digit"});
+            if (typeof v === "number") {
+              // Excel serial date
+              const d = new Date(Math.round((v - 25569) * 86400 * 1000));
+              return d.toLocaleDateString("es-ES",{day:"2-digit",month:"2-digit",year:"2-digit"});
+            }
+            return String(v).split("T")[0].trim();
+          })(),
+          isDup
+        });
+      });
+      // Stats based on unique transportes
+      const unique = camiones.filter(c => !c.isDup);
+      const total      = unique.length;
+      const pendientes = unique.filter(c => c.status < 4).length;
+      const registrados = unique.filter(c => c.status === 2);
+      const enCarga    = unique.filter(c => c.status === 3);
+      const finCarga       = unique.filter(c => c.status >= 4);
+      const pendientes_list = unique.filter(c => c.status < 4);
+      setCargasData(prev => ({ ...prev, [fid]: { total, pendientes, registrados, enCarga, finCarga, pendientes_list, todos: unique } }));
+      setCargasFecha(prev => ({ ...prev, [fid]: new Date().toLocaleTimeString("es-ES",{hour:"2-digit",minute:"2-digit"}) }));
+      showSaved("✓ Cargas: " + total + " camiones, " + pendientes + " pendientes");
+    } catch(e) { console.error("parseCargasXlsx:", e); showSaved("⚠️ Error: " + e.message); }
+  };
+
+  const renderTransporte = () => (
+    <div style={C.row}>
+      {FACTORIES.map(fac => {
+        const fd = dayData[fac.id] || {};
+        const cd = cargasData[fac.id] || null;
+        const nocturnas = fd.transporteMeta?.nocturnas || "";
+        return (
+          <FactoryPanel key={fac.id} factory={fac}>
+            {/* Load button */}
+            <div style={{ display:"flex", alignItems:"center", gap:"10px", marginBottom:"12px", flexWrap:"wrap" }}>
+              <label style={{ ...C.btn(fac.color), cursor:"pointer", fontSize:"11px" }}>
+                📂 CARGAR EXCEL
+                <input type="file" accept=".xlsx,.xls" style={{ display:"none" }}
+                  onChange={e => {
+                    const file = e.target.files[0]; if (!file) return;
+                    const reader = new FileReader();
+                    reader.onload = ev => parseCargasXlsx(ev.target.result, fac.id);
+                    reader.readAsArrayBuffer(file);
+                    e.target.value = "";
+                  }} />
+              </label>
+              {cargasFecha[fac.id] && <span style={{ fontSize:"11px", color:"#F9FAFB" }}>Cargado {cargasFecha[fac.id]}</span>}
+            </div>
+
+            {/* KPI summary */}
+            <div style={{ display:"flex", gap:"10px", marginBottom:"14px", flexWrap:"wrap" }}>
+              {[
+                { lbl:"TOTALES",    val: cd ? cd.total     : "—", color: fac.color },
+                { lbl:"ARRASTRADOS", val: fd.arrastrados||"—", color:"#EF4444" },                { lbl:"PENDIENTES", val: cd ? cd.pendientes : "—", color:"#EF4444" },
+                { lbl:"NOCTURNAS",  val: nocturnas || "—",  color:"#8B5CF6", manual:true }
+              ].map(({lbl,val,color,manual}) => (
+                <div key={lbl} style={{ background:"#16161C", borderRadius:"8px", padding:"8px 14px", textAlign:"center", minWidth:"90px", border:"1px solid #2A2A35" }}>
+                  <div style={{ fontSize:"11px", color:"#F9FAFB", fontWeight:600, letterSpacing:"0.1em", marginBottom:"6px" }}>{lbl}</div>
+                  {manual
+                    ? <input type="number" placeholder="—"
+                        style={{ background:"transparent", border:"none", color, fontSize:"28px", fontWeight:800, textAlign:"center", width:"70px", outline:"none", fontFamily:"inherit" }}
+                        value={fd.transporteMeta?.nocturnas||""}
+                        onChange={e => {
+                          const updated = { ...dayData, [fac.id]: { ...dayData[fac.id], transporteMeta: { ...(dayData[fac.id].transporteMeta||{}), nocturnas: e.target.value }}};
+                          setDayData(updated);
+                        }} />
+                    : <div style={{ fontSize:"28px", fontWeight:800, color }}>{val}</div>
+                  }
+                </div>
+              ))}
+            </div>
+
+            {/* Status sections */}
+            {cd && (
+              <div style={{ display:"flex", flexDirection:"column", gap:"8px" }}>
+                {[
+                  { key:"pendientes",  lbl:"⏳ Pendientes",       items: cd.pendientes_list, color:"#EF4444" },
+                  { key:"registrados", lbl:"🕐 Registrados",      items: cd.registrados,     color:"#38BDF8" },
+                  { key:"enCarga",     lbl:"🔄 En carga",          items: cd.enCarga,         color:"#F59E0B" },
+                  { key:"finCarga",    lbl:"✅ Carga finalizada",  items: cd.finCarga,        color:"#22c55e" },
+                  { key:"arrastrados",  lbl:"⬅️ Arrastrados día anterior", items: (dayData[fac.id]?.arrastradosLista||[]), color:"#EF4444" },
+                ].map(({key, lbl, items, color}) => (
+                  <div key={key} style={{ background:"#1A1A1F", border:"1px solid #2A2A35", borderRadius:"8px", overflow:"hidden" }}>
+                    <div onClick={() => toggleSection(fac.id, key)}
+                      style={{ background:"#252530", padding:"10px 16px", display:"flex", alignItems:"center", gap:"8px", cursor:"pointer", userSelect:"none" }}>
+                      <span style={{ color:"#9CA3AF", fontSize:"12px" }}>{openSections[fac.id][key] ? "▼" : "▶"}</span>
+                      <span style={{ color, fontWeight:700, fontSize:"14px", flex:1 }}>{lbl}</span>
+                      <span style={{ background:color+"33", color, borderRadius:"9999px", padding:"2px 10px", fontSize:"12px", fontWeight:700 }}>{items.length}</span>
+                    </div>
+                    {openSections[fac.id][key] && items.length > 0 && (
+                      <div style={{ padding:"6px 12px", display:"flex", flexDirection:"column", gap:"4px" }}>
+                        {items.map((c,ci) => (
+                          <div key={ci} style={{ background:"#111113", border:"1px solid #36363F", borderRadius:"6px", padding:"6px 12px", fontSize:"11px", display:"flex", gap:"12px", alignItems:"center" }}>
+                            <span style={{ color, fontWeight:800, fontSize:"12px", whiteSpace:"nowrap" }}>{c.nTransp}</span>
+                            <span style={{ color:"#FFFFFF", fontWeight:600, flex:1 }}>{c.cliente}</span>
+                            <span style={{ color:"#9CA3AF", fontSize:"10px", whiteSpace:"nowrap" }}>{c.transport}</span>
+                            {c.fechaEnt && <span style={{ color:"#38BDF8", fontSize:"10px", whiteSpace:"nowrap" }}>📅 {c.fechaEnt}</span>}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {openSections[fac.id][key] && items.length === 0 && (
+                      <div style={{ padding:"8px 12px", color:"#606070", fontSize:"11px", fontStyle:"italic" }}>Sin camiones en este estado</div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Arrastrados */}
+            <div style={{ ...C.div, marginTop:"10px" }}>
+              <div style={{ ...C.lbl, marginBottom:"6px" }}>🚛 Camiones arrastrados del día anterior</div>
+              <textarea
+                style={{ ...C.textarea, marginBottom:"6px", fontFamily:"'DM Mono','Courier New',monospace", fontSize:"11px" }}
+                placeholder={"CLIENTE\t663857\nCLIENTE\t663858"}
+                value={arrastradosPaste[fac.id]}
+                onChange={e => {
+                  const txt = e.target.value;
+                  setArrastradosPaste(p => ({...p, [fac.id]: txt}));
+                  // Parse and count unique transport numbers
+                  const lines2 = txt.trim().split("\n").filter(l => l.trim());
+                  const parsed = lines2.map(l => {
+                    const parts = l.split(/\t/);
+                    // Format: CLIENTE	NTRANSP	TRANSPORTISTA	FECHA
+                    const p0 = parts[0]?.trim()||"";
+                    const p1 = parts[1]?.trim()||"";
+                    const p2 = parts[2]?.trim()||"";
+                    const p3 = parts[3]?.trim()||"";
+                    const isNum0 = /^\d{6}/.test(p0);
+                    return {
+                      cliente:    isNum0 ? p1 : p0,
+                      nTransp:    isNum0 ? p0 : p1,
+                      transport:  isNum0 ? p2 : p2,
+                      fechaEnt:   p3 || ""
+                    };
+                  });
+                  const parsedFiltered = parsed.filter(r => r.nTransp);
+                  const count = new Set(parsedFiltered.map(r => r.nTransp)).size;
+                  const updated = { ...dayData, [fac.id]: { ...dayData[fac.id], arrastrados: count || "", arrastradosLista: parsedFiltered }};
+                  setDayData(updated);
+                }}
+              />
+            </div>
+            {/* Anotaciones */}
+            <div style={{ ...C.div, marginTop:"14px" }}>
+              <div style={{ ...C.lbl, marginBottom:"8px" }}>Anotaciones</div>
+              <input style={{ ...C.input, marginBottom:"6px" }} placeholder="Título..."
+                value={entry[fac.id].titulo} onChange={e => setEntry(p => ({ ...p, [fac.id]: { ...p[fac.id], titulo: e.target.value } }))} />
+              <textarea style={{ ...C.textarea, marginBottom:"6px" }} placeholder="Descripción..."
+                value={entry[fac.id].texto} onChange={e => setEntry(p => ({ ...p, [fac.id]: { ...p[fac.id], texto: e.target.value } }))} />
+              <button style={C.btn(fac.color)} onClick={() => addEntry("transporte", fac.id)}>+ AÑADIR</button>
+              <EntryList entries={fd.transporte} onDelete={i => deleteEntry("transporte", fac.id, i)} color={fac.color} />
+            </div>
+          </FactoryPanel>
+        );
+      })}
+    </div>
+  );
+
+  const parseSAPXlsx = (arrayBuffer, fid) => {
+    try {
+      const wb = XLSX.read(arrayBuffer, { type:"array" });
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      const range = XLSX.utils.decode_range(ws["!ref"] || "A1");
+      const toNum = (v) => {
+        if (v === null || v === undefined || v === "") return 0;
+        const s = String(v).replace(/\./g,"").replace(",",".");
+        return parseFloat(s) || 0;
+      };
+
+      // Build header row: col index -> code string
+      const codes = {};
+      for (let c = 1; c <= range.e.c; c++) {
+        const cell = ws[XLSX.utils.encode_cell({r:0, c})];
+        if (cell) {
+          const v = cell.v;
+          const code = Number.isInteger(v) ? String(v).padStart(4,"0")
+                     : typeof v === "number" ? String(Math.round(v)).padStart(4,"0")
+                     : String(v).trim();
+          codes[c] = code;
+        }
+      }
+
+      // Find rows by label
+      const getRow = (label) => {
+        for (let r = 1; r <= range.e.r; r++) {
+          const cell = ws[XLSX.utils.encode_cell({r, c:0})];
+          if (cell && String(cell.v).includes(label)) {
+            const row = {};
+            for (let c = 1; c <= range.e.c; c++) {
+              const rc = ws[XLSX.utils.encode_cell({r, c})];
+              row[c] = rc ? rc.v : null;
+            }
+            return row;
+          }
+        }
+        return {};
+      };
+
+      const pedidosRow = getRow("TOTAL PEDIDOS");
+      const fisicoRow  = getRow("FÍSICO");
+      const disponRow  = getRow("DISPONIBLE");
+      const bloqRow    = getRow("BLOQUEADO");
+
+      const criticos = Object.entries(codes).map(([col, cod]) => {
+        const p = toNum(pedidosRow[col]);
+        const f = toNum(fisicoRow[col]);
+        const b = toNum(bloqRow[col]);
+        const d = toNum(disponRow[col]);
+        return { cod, pedidos:p, fisico:f, dispon:d, bloq:b, trans:0, diff: f-b-p };
+      }).filter(r => r.diff <= 0 && r.pedidos > 0)
+        .sort((a,b) => { const aNum=/^\d+$/.test(a.cod), bNum=/^\d+$/.test(b.cod); if(aNum&&!bNum)return -1; if(!aNum&&bNum)return 1; if(aNum&&bNum)return parseInt(a.cod)-parseInt(b.cod); return a.cod.localeCompare(b.cod); });
+
+      const hora = new Date().toLocaleTimeString("es-ES",{hour:"2-digit",minute:"2-digit"});
+      const updated = { ...dayData, [fid]: { ...dayData[fid], sapCriticos: criticos, sapFecha: new Date().toLocaleTimeString("es-ES",{hour:"2-digit",minute:"2-digit"}), pedidosMap: {}, pedidosFecha: "", sapLlenado: {} }};
+      saveData(updated);
+      showSaved("✓ Stocks " + FACTORIES.find(f=>f.id===fid).label + ": " + criticos.length + " críticos");
+    } catch(e) { console.error("parseSAPXlsx error:", e); showSaved("⚠️ Error al leer stocks: " + e.message); }
+  };
+
+  const parseSAPXml = (xmlText, fid) => {
+    const text = xmlText.replace(/^\uFEFF/, "");
+    const rowRegex = /<Row[^>]*>([\s\S]*?)<\/Row>/g;
+    const rows = [];
+    let m;
+    while ((m = rowRegex.exec(text)) !== null) rows.push(m[1]);
+    if (rows.length < 3) { showSaved("⚠️ Formato no reconocido"); return; }
+
+    const toNum = (s) => parseFloat((s||"0").replace(/\./g,"").replace(",",".")) || 0;
+
+    // Parse row counting self-closing empty cells as column placeholders
+    const parseByCol = (row) => {
+      const map = {};
+      let cur = 1;
+      // Replace self-closing cells with placeholder so they consume a column
+      const expanded = row.replace(/<Cell([^>]*)\/>/g, '<Cell$1><Data ss:Type="String">__MT__</Data></Cell>');
+      const re = /<Cell([^>]*)>([\s\S]*?)<\/Cell>/g;
+      let cm;
+      while ((cm = re.exec(expanded)) !== null) {
+        const ix = cm[1].match(/ss:Index="(\d+)"/);
+        if (ix) cur = parseInt(ix[1]);
+        const dm = cm[2].match(/<Data[^>]*>([\s\S]*?)<\/Data>/);
+        const val = dm ? dm[1].trim() : null;
+        if (val && val !== "__MT__") map[cur] = val;
+        cur++;
+      }
+      return map;
+    };
+
+    const codesMap   = parseByCol(rows[0]);
+    const pedidosMap = parseByCol(rows[1]);
+    const fisicoMap  = parseByCol(rows[2]);
+    const disponMap  = parseByCol(rows[3]);
+    const bloqMap    = parseByCol(rows.length > 6 ? rows[6] : "");
+    const transMap   = parseByCol(rows.length > 7 ? rows[7] : "");
+
+    const codes = Object.entries(codesMap)
+      .filter(([c]) => parseInt(c) > 1)
+      .sort((a,b) => parseInt(a[0]) - parseInt(b[0]));
+
+    const criticos = codes.map(([col, cod]) => {
+      const p = toNum(pedidosMap[col]);
+      const f = toNum(fisicoMap[col]);
+      const b = toNum(bloqMap[col]);
+      const t = toNum(transMap[col]);
+      const d = toNum(disponMap[col]);
+      return { cod, pedidos: p, fisico: f, dispon: d, bloq: b, trans: t, diff: f - b - p };
+    }).filter(r => r.diff <= 0 && r.pedidos > 0)
+      .sort((a,b) => { const aNum=/^\d+$/.test(a.cod), bNum=/^\d+$/.test(b.cod); if(aNum&&!bNum)return -1; if(!aNum&&bNum)return 1; if(aNum&&bNum)return parseInt(a.cod)-parseInt(b.cod); return a.cod.localeCompare(b.cod); });
+
+    const updated = { ...dayData, [fid]: { ...dayData[fid], sapCriticos: criticos, sapFecha: new Date().toLocaleTimeString("es-ES",{hour:"2-digit",minute:"2-digit"}) }};
+    saveData(updated);
+    showSaved("✓ SAP " + FACTORIES.find(f=>f.id===fid).label + ": " + criticos.length + " críticos");
+  };
+
+  // ── Pedidos parser (xlsx) ────────────────────────────────────────
+  const parsePedidosXlsx = (arrayBuffer, fid) => {
+    try {
+      const wb = XLSX.read(arrayBuffer, { type:"array" });
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(ws, { header:1, defval:null, raw:false });
+      if (rows.length < 2) return;
+      // Flexible column search - handles slight name variations
+      // Build header map from all cells in row 1
+      const range = XLSX.utils.decode_range(ws["!ref"] || "A1");
+      const header = [];
+      for (let c = range.s.c; c <= range.e.c; c++) {
+        const cell = ws[XLSX.utils.encode_cell({r:0, c})];
+        header.push(cell ? String(cell.v).trim() : "");
+      }
+      const findCol = (names) => { for(const n of names){ const idx = header.findIndex(h => h && h.toLowerCase().includes(n.toLowerCase())); if(idx>=0) return idx; } return -1; };
+      const iCliente = findCol(["Nombre Destinatario","destinatario"]);
+      const iTransp  = findCol(["Transp.","Transporte"]);
+      const iFecha   = findCol(["Fec.Pedido","Fecha Pedido","fec.pedido","fecha pedido"]);
+      const iHora    = findCol(["Hora Carga","hora carga"]);
+      console.log("Cols - Cliente:",iCliente,"Transporte:",iTransp,"Fecha:",iFecha,"Hora:",iHora,"TotalCols:",header.length);
+      // Find product code columns (4-digit numeric or letter codes)
+      const prodCols = {};
+      header.forEach((h, idx) => {
+        if (/^\d{4}$/.test(h) || /^[A-Z]\d{3}$/.test(h)) prodCols[h] = idx;
+      });
+      // Build map: code -> [{cliente, transporte, fecha, qty}]
+      const map = {};
+      rows.slice(1).forEach(row => {
+        const cliente   = row[iCliente]  ? String(row[iCliente]).trim()  : "";
+        const transporte = row[iTransp]  ? String(row[iTransp]).trim()   : "";
+        const rawFecha = row[iFecha];
+        const fecha = rawFecha ? (rawFecha instanceof Date ? rawFecha.toLocaleDateString("es-ES") : String(rawFecha).trim()) : "";
+        const hora       = row[iHora]     ? String(row[iHora]).trim()     : "";
+        Object.entries(prodCols).forEach(([cod, ci]) => {
+          const qty = row[ci];
+          if (qty && qty !== 0) {
+            if (!map[cod]) map[cod] = [];
+            const qtyNum = typeof qty === "number" ? qty : parseFloat(String(qty).replace(",","."));
+            if (!isNaN(qtyNum) && qtyNum > 0) map[cod].push({ cliente, transporte, fecha, hora, qty: qtyNum });
+          }
+        });
+      });
+      const hora = new Date().toLocaleTimeString("es-ES",{hour:"2-digit",minute:"2-digit"});
+      const updated = { ...dayData, [fid]: { ...dayData[fid], pedidosMap: map, pedidosFecha: hora }};
+      saveData(updated);
+      showSaved("✓ Pedidos cargados " + hora);
+    } catch(e) { console.error("Pedidos parse error:", e); showSaved("⚠️ Error al leer pedidos"); }
+  };
+
+
+  const renderStocksFac = (facId) => {
+    const fac = FACTORIES.find(f => f.id === facId);
+    const fd = dayData[fac.id] || {};
+    const criticos = sortCriticos(fd.sapCriticos || []);
+    // situacion colors: bg tint and text
+    const situBg     = Object.fromEntries(situOpciones.map(s=>([s.label,s.bg])));
+    const situTxt    = Object.fromEntries(situOpciones.map(s=>([s.label,s.txt])));
+    const situBorder = Object.fromEntries(situOpciones.map(s=>([s.label,s.border])));
+    return (
+      <div style={{ padding:"0 4px" }}>
+        {/* Header row: SAP import */}
+        <div style={{ display:"flex", alignItems:"center", gap:"14px", marginBottom:"12px", flexWrap:"wrap" }}>
+          <label style={{ ...C.btn(fac.color), cursor:"pointer", display:"inline-block", fontSize:"12px" }}>
+            📂 CARGAR STOCKS
+            <input type="file" accept=".xlsx,.xls" style={{ display:"none" }}
+              onChange={e => {
+                const file = e.target.files[0]; if (!file) return;
+                const reader = new FileReader();
+                reader.onload = ev => parseSAPXlsx(ev.target.result, fac.id);
+                reader.readAsArrayBuffer(file);
+                e.target.value = "";
+              }} />
+          </label>
+          <label style={{ ...C.btn("#8B5CF6"), cursor:"pointer", display:"inline-block", fontSize:"12px" }}>
+            📋 CARGAR PEDIDOS
+            <input type="file" accept=".xlsx,.xls" style={{ display:"none" }}
+              onChange={e => {
+                const file = e.target.files[0]; if (!file) return;
+                const reader = new FileReader();
+                reader.onload = ev => parsePedidosXlsx(ev.target.result, fac.id);
+                reader.readAsArrayBuffer(file);
+                e.target.value = "";
+              }} />
+          </label>
+          {fd.pedidosFecha && <span style={{ fontSize:"11px", color:"#c4b5fd" }}>Pedidos: {fd.pedidosFecha}</span>}
+          {fd.pedidosMap && (
+            <button
+              onClick={() => setShowClientes(v => !v)}
+              style={{ display:"inline-flex", alignItems:"center", gap:"8px", background:"transparent", border:"none", cursor:"pointer", padding:"0", fontFamily:"inherit" }}>
+              <div style={{ display:"flex", alignItems:"center", gap:"8px" }}>
+                <div style={{ width:"38px", height:"20px", borderRadius:"10px", background: showClientes ? "linear-gradient(135deg,#8B5CF6,#06B6D4)" : "#0D0D14", border: showClientes?"none":"2px solid #6B7280", position:"relative", transition:"all 0.3s", flexShrink:0 }}>
+                  <div style={{ position:"absolute", top:"2px", left: showClientes?"20px":"2px", width:"14px", height:"14px", borderRadius:"50%", background:"#fff", transition:"left 0.3s", boxShadow:"0 1px 4px rgba(0,0,0,0.4)" }}></div>
+                </div>
+                <span style={{ fontSize:"12px", fontWeight:500, color: showClientes?"#A78BFA":"#6B7280" }}>Clientes</span>
+              </div>
+            </button>
+          )}
+          {planData.length > 0 && (
+            <button
+              onClick={() => setShowPlan(v => !v)}
+              style={{ display:"inline-flex", alignItems:"center", gap:"8px", background:"transparent", border:"none", cursor:"pointer", padding:"0", fontFamily:"inherit" }}>
+              <div style={{ display:"flex", alignItems:"center", gap:"8px" }}>
+                <div style={{ width:"38px", height:"20px", borderRadius:"10px", background: showPlan ? "linear-gradient(135deg,#10B981,#06B6D4)" : "#0D0D14", border: showPlan?"none":"2px solid #6B7280", position:"relative", transition:"all 0.3s", flexShrink:0 }}>
+                  <div style={{ position:"absolute", top:"2px", left: showPlan?"20px":"2px", width:"14px", height:"14px", borderRadius:"50%", background:"#fff", transition:"left 0.3s", boxShadow:"0 1px 4px rgba(0,0,0,0.4)" }}></div>
+                </div>
+                <span style={{ fontSize:"12px", fontWeight:500, color: showPlan?"#34D399":"#6B7280" }}>Plan</span>
+              </div>
+            </button>
+          )}
+          {fd.sapFecha && <span style={{ fontSize:"11px", color:"#F9FAFB" }}>Cargado {fd.sapFecha}</span>}
+          {criticos.length > 0 && <span style={{ fontSize:"11px", color:"#EF4444", fontWeight:700 }}>⚠️ {criticos.length} referencias críticas</span>}
+        </div>
+
+        {/* Critical stocks table — full width */}
+        {criticos.length > 0 && (
+          <div style={{ overflow:"auto", maxHeight:"calc(100vh - 180px)", marginBottom:"16px" }}>
+            <table style={{ width:"100%", borderCollapse:"collapse", fontSize:"12px", tableLayout:"fixed" }}>
+              <colgroup>
+                <col style={{ width:"62px" }}/>
+                <col style={{ width:"62px" }}/>
+                <col style={{ width:"62px" }}/>
+                <col style={{ width:"72px" }}/>
+                <col style={{ width:"68px" }}/>
+                <col style={{ width:"60px" }}/>
+                <col style={{ width:"68px" }}/>
+                <col style={{ width:"58px" }}/>
+                <col style={{ width:"86px" }}/>
+                <col style={{ width:"118px" }}/>
+              </colgroup>
+              <thead style={{ position:"sticky", top:0, zIndex:5 }}>
+                <tr style={{ borderBottom:"2px solid #606070", background:"#202028" }}>
+                  {["Código","Pedidos","Físico","Disponible","Bloqueado","Tránsito","Diferencia","Grupo","Hora","Situación",...(showPlan && planData.length > 0 ? ["Planificación"] : []),"Clientes afectados"].map((h,hi) => (
+                    <th key={h} style={{ padding:"6px 6px", textAlign: hi < 7 ? "right" : "left", color:"#F9FAFB", fontWeight:700, whiteSpace:"nowrap", fontSize:"11px" }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {criticos.map((r,i) => {
+                  const diff = r.diff;
+                  const llenado = fd.sapLlenado?.[r.cod] || {};
+                  const plan = getPlanForCod(r.cod);
+                  const situ = llenado.situacion || "";
+                  const updateLlenado = (field, val) => {
+                    const updated = { ...dayData, [fac.id]: { ...dayData[fac.id], sapLlenado: { ...(dayData[fac.id].sapLlenado||{}), [r.cod]: { ...(dayData[fac.id].sapLlenado?.[r.cod]||{}), [field]: val } } } };
+                    saveData(updated);
+                  };
+                  const rowBg = situ ? situBg[situ] : (i%2===0 ? "#0D0D0F" : "transparent");
+                  const grupoBg = situ ? situBg[situ] : "#111113";
+                  const grupoTxt = situ ? situTxt[situ] : "#F3F4F6";
+                  const grupoBrd = situ ? situBorder[situ] : "#3F3F46";
+                  return (
+                    <React.Fragment key={i}>
+                    <tr style={{ borderBottom:"1px solid #44444F", background: rowBg }}>
+                      <td style={{ padding:"4px 6px", color: situ ? situTxt[situ] : fac.color, fontWeight:700, textAlign:"right" }}>{r.cod}</td>
+                      <td style={{ padding:"4px 6px", color:"#FFFFFF", textAlign:"right" }}>{r.pedidos}</td>
+                      <td style={{ padding:"4px 6px", color:"#FFFFFF", textAlign:"right" }}>{r.fisico}</td>
+                      <td style={{ padding:"4px 6px", color:"#FFFFFF", textAlign:"right" }}>{r.dispon}</td>
+                      <td style={{ padding:"4px 6px", color: r.bloq>0?"#F97316":"#52525B", textAlign:"right" }}>{r.bloq||"—"}</td>
+                      <td style={{ padding:"4px 6px", color: r.trans>0?"#3B82F6":"#52525B", textAlign:"right" }}>{r.trans||"—"}</td>
+                      <td style={{ padding:"4px 6px", color:"#EF4444", fontWeight:700, textAlign:"right" }}>{(diff??0).toFixed(2)}</td>
+                      <td style={{ padding:"3px 4px" }}>
+                        <select
+                          style={{ background: llenado.grupo ? "#0a3d1f" : "#1A1A20", border:"1px solid "+(llenado.grupo ? "#22c55e" : "#3F3F46"), borderRadius:"4px", color: llenado.grupo ? "#6ee7a0" : "#9CA3AF", padding:"3px 4px", fontSize:"12px", outline:"none", cursor:"pointer", width:"52px", fontWeight: llenado.grupo ? 700 : 400 }}
+                          value={llenado.grupo||""}
+                          onChange={e => updateLlenado("grupo", e.target.value)}
+                        >
+                          <option value="">—</option>
+                          {grupoOpciones.map(g => <option key={g} value={g}>{g}</option>)}
+                        </select>
+                      </td>
+                      <td style={{ padding:"3px 4px", position:"relative", zIndex:2 }}>
+                        <input type="time"
+                          style={{ background: llenado.hora ? "#0a3d1f" : "#2A2A35", border:"1px solid "+(llenado.hora ? "#22c55e" : "#606070"), borderRadius:"4px", color: llenado.hora ? "#6ee7a0" : "#F9FAFB", padding:"4px 6px", fontSize:"12px", outline:"none", width:"82px", colorScheme:"dark", cursor:"pointer", fontWeight: llenado.hora ? 700 : 400 }}
+                          value={llenado.hora||""}
+                          onChange={e => updateLlenado("hora", e.target.value)}
+                        />
+                      </td>
+                      <td style={{ padding:"3px 4px" }}>
+                        <select
+                          style={{ background: situ ? situBg[situ] : "#1A1A20", border:"1px solid "+(situ ? situBorder[situ] : "#3F3F46"), borderRadius:"4px", color: situ ? situTxt[situ] : "#9CA3AF", padding:"3px 4px", fontSize:"11px", outline:"none", cursor:"pointer", fontWeight: situ ? 700 : 400 }}
+                          value={situ}
+                          onChange={e => updateLlenado("situacion", e.target.value)}
+                        >
+                          <option value="">—</option>
+                          {situOpciones.map(s => <option key={s.label} value={s.label}>● {s.label}</option>)}
+                        </select>
+                        <select
+                          style={{ background: situ ? situBg[situ]+"99" : "#1A1A20", border:"1px solid "+(situ ? situBorder[situ] : "#3F3F46"), borderRadius:"4px", color: situ ? situTxt[situ] : "#9CA3AF", padding:"2px 4px", fontSize:"10px", outline:"none", cursor:"pointer", marginTop:"3px", width:"100%" }}
+                          value={llenado.detalle||""}
+                          onChange={e => updateLlenado("detalle", e.target.value)}
+                        >
+                          <option value="">Detalle...</option>
+                          {detalleOpciones.map(d => <option key={d} value={d}>{d}</option>)}
+                        </select>
+                      </td>
+                      {showPlan && planData.length > 0 && (
+                        <td style={{ padding:"3px 6px", verticalAlign:"top", minWidth:"180px" }}>
+                          {plan.map((p,pi) => (
+                            <div key={pi} style={{ background:"#0a3d1f", border:"1px solid #22c55e", borderRadius:"4px", padding:"3px 6px", marginBottom:"2px", fontSize:"10px", whiteSpace:"nowrap" }}>
+                              <span style={{ color:"#6ee7a0", fontWeight:700 }}>{p.grupo}</span>
+                              <span style={{ color:"#9CA3AF", margin:"0 4px" }}>·</span>
+                              <span style={{ color:"#FFFFFF" }}>{p.hi}</span>
+                              <span style={{ color:"#9CA3AF", margin:"0 3px" }}>→</span>
+                              <span style={{ color:"#fca5a5" }}>{p.hf}</span>
+                            </div>
+                          ))}
+                          {plan.length === 0 && <span style={{ color:"#606070", fontSize:"10px" }}>—</span>}
+                        </td>
+                      )}
+                      <td style={{ padding:"3px 4px", width:"400px", minWidth:"300px" }}>
+                            {(() => {
+                              if (!showClientes) return null;
+                              const clientes = (fd.pedidosMap?.[r.cod] || []);
+                              if (!clientes.length) return <span style={{ color:"#606070", fontSize:"11px" }}>—</span>;
+                              const byFecha = {};
+                              clientes.forEach(c => {
+                                const f = c.fecha || "Sin fecha";
+                                if (!byFecha[f]) byFecha[f] = [];
+                                byFecha[f].push(c);
+                              });
+                              Object.values(byFecha).forEach(arr => arr.sort((a,b) => (a.hora||"").localeCompare(b.hora||"")));
+                              return (
+                                <div style={{ display:"flex", gap:"6px", flexWrap:"nowrap", overflowX:"auto" }}>
+                                  {Object.entries(byFecha).sort((a,b)=>a[0].localeCompare(b[0])).map(([fecha, cs]) => (
+                                    <div key={fecha} style={{ minWidth:"180px", flex:"0 0 auto", background:"#1C1C24", border:"1px solid #44444F", borderRadius:"5px", padding:"3px 6px" }}>
+                                      <div style={{ fontSize:"9px", color:"#c4b5fd", fontWeight:700, marginBottom:"3px", borderBottom:"1px solid #36363F", paddingBottom:"2px" }}>
+                                        <span style={{ color:"#fcd34d" }}>{r.cod}</span> · {fecha}
+                                      </div>
+                                      {cs.map((c,ci) => (
+                                        <div key={ci} style={{ display:"grid", gridTemplateColumns:"28px 80px 52px 1fr", gap:"3px", alignItems:"baseline", fontSize:"10px", padding:"1px 0", borderBottom: ci < cs.length-1 ? "1px solid #2A2A35" : "none" }}>
+                                          <span style={{ color:"#fcd34d", fontWeight:700 }}>{c.qty}</span>
+                                          <span style={{ color:"#9CA3AF", whiteSpace:"nowrap" }}>{c.hora}</span>
+                                          <span style={{ color:"#38BDF8", whiteSpace:"nowrap", fontWeight:600 }}>{c.transporte}</span>
+                                          <span style={{ color:"#F3F4F6", whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{c.cliente}</span>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  ))}
+                                </div>
+                  );
+                            })()}
+                      </td>
+                    </tr>
+                    </React.Fragment>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+        {criticos.length === 0 && fd.sapFecha && (
+          <div style={{ background:"#052e16", border:"1px solid #16a34a", borderRadius:"6px", padding:"8px 12px", marginBottom:"12px", fontSize:"12px", color:"#4ade80" }}>
+            ✓ Sin referencias críticas
+          </div>
+        )}
+
+        {/* Manual notes */}
+        <div style={{ borderTop:"1px solid #44444F", paddingTop:"10px" }}>
+          <div style={{ ...C.lbl, marginBottom:"8px" }}>Notas manuales</div>
+          <input style={{ ...C.input, marginBottom:"6px" }} placeholder="Título..."
+            value={entry[fac.id].titulo} onChange={e => setEntry(p => ({ ...p, [fac.id]: { ...p[fac.id], titulo: e.target.value } }))} />
+          <textarea style={{ ...C.textarea, marginBottom:"6px" }} placeholder="Descripción..."
+            value={entry[fac.id].texto} onChange={e => setEntry(p => ({ ...p, [fac.id]: { ...p[fac.id], texto: e.target.value } }))} />
+          <button style={C.btn(fac.color)} onClick={() => addEntry("stocks", fac.id)}>+ AÑADIR</button>
+          <EntryList entries={dayData[fac.id]?.stocks} onDelete={i => deleteEntry("stocks", fac.id, i)} color={fac.color} />
+        </div>
+      </div>
+    );
+  };
+
+  const renderAlmacen = () => {
+    const fac = FACTORIES[0]; // Solo A Grela
+    const fd = dayData[fac.id] || {};
+    const celdas = fd.celdas || [];
+    const addCelda = async () => {
+      const hora = new Date().toLocaleTimeString("es-ES", { hour:"2-digit", minute:"2-digit" });
+      const val = fd.celdasInput || "";
+      if (!val) return;
+      const updated = { ...dayData, [fac.id]: { ...dayData[fac.id], celdas: [...celdas, { val, hora }], celdasInput: "" }};
+          };
+    return (
+      <div style={C.row}>
+        <FactoryPanel factory={fac}>
+          {/* Celdas vacías log */}
+          <div style={{ marginBottom:"14px" }}>
+            <div style={{ ...C.lbl, marginBottom:"8px" }}>Celdas vacías disponibles</div>
+            <div style={{ display:"flex", gap:"8px", marginBottom:"10px" }}>
+              <input
+                style={{ ...C.input, width:"120px", textAlign:"center", fontSize:"22px", fontWeight:700 }}
+                type="number" placeholder="—"
+                value={fd.celdasInput||""}
+                onChange={e => setDayData(p => ({ ...p, [fac.id]: { ...p[fac.id], celdasInput: e.target.value } }))}
+                onKeyDown={e => e.key==="Enter" && addCelda()}
+              />
+              <button style={C.btn(fac.color)} onClick={addCelda}>+ REGISTRAR</button>
+            </div>
+            {celdas.length > 0 && (
+              <div style={{ display:"flex", flexDirection:"column", gap:"3px" }}>
+                {celdas.map((c,i) => (
+                  <div key={i} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", background:"#1C1C24", border:"1px solid #44444F", borderLeft:"3px solid "+fac.color, borderRadius:"5px", padding:"5px 10px" }}>
+                    <span style={{ color:"#FFFFFF", fontSize:"13px" }}>Celdas: <strong style={{ color:fac.color, fontSize:"15px" }}>{c.val}</strong></span>
+                    <span style={{ color:"#9CA3AF", fontSize:"11px" }}>{c.hora}</span>
+                    <button onClick={async () => { const updated = { ...dayData, [fac.id]: { ...dayData[fac.id], celdas: celdas.filter((_,j) => j!==i) }}; await saveData(updated); }}
+                      style={{ background:"none", border:"none", color:"#9CA3AF", cursor:"pointer", fontSize:"16px", padding:0 }}>×</button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+          <div style={C.div}>
+            <div style={{ ...C.lbl, marginBottom:"8px" }}>Incidencias / Anotaciones</div>
+            <input style={{ ...C.input, marginBottom:"6px" }} placeholder="Título / Referencia..."
+              value={entry[fac.id].titulo} onChange={e => setEntry(p => ({ ...p, [fac.id]: { ...p[fac.id], titulo: e.target.value } }))} />
+            <textarea style={{ ...C.textarea, marginBottom:"6px" }} placeholder="Descripción..."
+              value={entry[fac.id].texto} onChange={e => setEntry(p => ({ ...p, [fac.id]: { ...p[fac.id], texto: e.target.value } }))} />
+            <button style={C.btn(fac.color)} onClick={() => addEntry("almacen", fac.id)}>+ AÑADIR</button>
+            <EntryList entries={fd.almacen} onDelete={i => deleteEntry("almacen", fac.id, i)} color={fac.color} />
+          </div>
+        </FactoryPanel>
+      </div>
+    );
+  };
+
+  // ── Centro Logístico XLSX parser ───────────────────────────────
+  const parseCentroXlsx = (arrayBuffer, centroKey) => {
+    try {
+      const wb = XLSX.read(arrayBuffer, { type:"array" });
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(ws, { header:1, defval:null, raw:true });
+      if (rows.length < 2) return;
+      // Normalize code: 700210->0210, 70A040->A040, 706211->6211
+      const normCode = (v) => {
+        if (!v) return "";
+        let s = String(v).trim();
+        if (/^700\d{3}$/.test(s)) return s.slice(3).padStart(4,"0");
+        if (/^700\d+$/.test(s)) return s.slice(3);
+        if (/^70[A-Z]/.test(s)) return s.slice(2);
+        if (/^706/.test(s)) return s.slice(1); // 706211 -> 6211
+        if (/^707/.test(s)) return s.slice(1);
+        return s;
+      };
+      const stockMap = {};
+      // Use header row to detect columns
+      const hdr = (rows[0] || []).map(h => h ? String(h).toLowerCase() : "");
+      const colMat  = hdr.findIndex(h => h.includes("material"));
+      const colDesc = hdr.findIndex(h => h.includes("texto") || h.includes("denom"));
+      const colLibre = hdr.findIndex(h => h.includes("libre"));
+      const colBloq  = hdr.findIndex(h => h.includes("bloq"));
+      const colUmb   = hdr.findIndex(h => h.includes("unidad"));
+      rows.slice(1).forEach(row => {
+        const cod  = normCode(row[colMat  >= 0 ? colMat  : 0]);
+        const desc = colDesc >= 0 && row[colDesc] ? String(row[colDesc]).trim() : "";
+        const libre = colLibre >= 0 && row[colLibre] ? Number(row[colLibre]) : 0;
+        const bloq  = colBloq  >= 0 && row[colBloq]  ? Number(row[colBloq])  : 0;
+        const umb   = colUmb   >= 0 && row[colUmb]   ? String(row[colUmb]).trim() : "";
+        if (cod && cod !== "material") stockMap[cod] = { libre, bloq, umb, desc };
+      });
+      setPaleInputs({});
+      setCentrosData(prev => ({ ...prev, [centroKey]: stockMap }));
+      setCentrosFecha(prev => ({ ...prev, [centroKey]: new Date().toLocaleTimeString("es-ES",{hour:"2-digit",minute:"2-digit"}) }));
+      showSaved("✓ Centro " + {moras:"Moras",ar2:"Autoradio 2",ar1:"Autoradio 1"}[centroKey] + ": " + Object.keys(stockMap).length + " referencias");
+    } catch(e) { console.error("parseCentroXlsx:", e); showSaved("⚠️ Error: " + e.message); }
+  };
+
+  const renderCentros = () => {
+    const centros = [
+      { key:"moras", label:"Moras",       color:"#38BDF8" },
+      { key:"ar2",   label:"Autoradio 2", color:"#10B981" },
+      { key:"ar1",   label:"Autoradio 1", color:"#F59E0B" },
+    ];
+
+    // All criticals from both factories
+    const criticos = [];
+    FACTORIES.forEach(fac => {
+      sortCriticos(dayData[fac.id]?.sapCriticos || []).forEach(r => {
+        const clientes = (dayData[fac.id]?.pedidosMap?.[r.cod] || []);
+        criticos.push({ fac, r, clientes });
+      });
+    });
+
+    const calcPales = (stock, umb, pckCj, uPale) => {
+      if (!uPale || !stock) return null;
+      const u = (umb||"").trim().toUpperCase();
+      if (u === "PCK" && pckCj > 0) return (stock / pckCj / uPale).toFixed(2);
+      if (["CJ","BRL","BDJ","PAL","CS","UN"].includes(u) || u !== "PCK") return (stock / uPale).toFixed(2);
+      return null;
+    };
+
+    return (
+      <div style={{ padding:"0 4px" }}>
+        {/* Header buttons */}
+        <div style={{ display:"flex", gap:"12px", marginBottom:"20px", flexWrap:"wrap", alignItems:"center" }}>
+          {centros.map(({key, label, color}) => (
+            <label key={key} style={{ ...C.btn(color), cursor:"pointer", fontSize:"11px", display:"inline-flex", alignItems:"center", gap:"6px" }}>
+              📂 {label.toUpperCase()}
+              <input type="file" accept=".xlsx,.xls" style={{ display:"none" }}
+                onChange={e => {
+                  const file = e.target.files[0]; if (!file) return;
+                  const reader = new FileReader();
+                  reader.onload = ev => parseCentroXlsx(ev.target.result, key);
+                  reader.readAsArrayBuffer(file);
+                  e.target.value = "";
+                }} />
+            </label>
+          ))}
+        </div>
+
+        {criticos.length === 0 && (
+          <div style={{ color:"#606070", textAlign:"center", padding:"60px", fontSize:"14px" }}>
+            Carga primero los stocks de Grela/Moras para ver las referencias críticas
+          </div>
+        )}
+
+        {criticos.length > 0 && (
+          <div style={{ overflow:"auto", maxHeight:"calc(100vh - 200px)" }}>
+            <table style={{ borderCollapse:"collapse", fontSize:"12px", width:"100%" }}>
+              <thead style={{ position:"sticky", top:0, zIndex:5 }}>
+                {/* Row 1: section headers */}
+                <tr style={{ background:"#202028", borderBottom:"1px solid #525260" }}>
+                  <th colSpan={6} style={{ padding:"8px 10px", textAlign:"left", color:"#F3F4F6", fontWeight:700, fontSize:"11px" }}>Referencias críticas</th>
+                  {centros.map(({key, label, color}) => (
+                    <th key={key} colSpan={4} style={{ padding:"10px 14px", textAlign:"center", color:"#111", background:color+"CC", fontWeight:800, fontSize:"13px", borderLeft:"3px solid "+color, whiteSpace:"nowrap", letterSpacing:"0.06em" }}>
+                      {label}{centrosFecha[key] && <div style={{ fontSize:"10px", fontWeight:400, marginTop:"2px", opacity:0.7 }}>{centrosFecha[key]}</div>}
+                    </th>
+                  ))}
+                </tr>
+                {/* Row 2: column labels */}
+                <tr style={{ background:"#1A1A22", borderBottom:"2px solid #525260" }}>
+                  <th style={{ padding:"5px 8px", color:"#E5E7EB", fontWeight:600, fontSize:"10px", whiteSpace:"nowrap", textAlign:"left" }}>Fábrica</th>
+                  <th style={{ padding:"5px 8px", color:"#E5E7EB", fontWeight:600, fontSize:"10px", whiteSpace:"nowrap", textAlign:"left" }}>Código</th>
+                  <th style={{ padding:"5px 8px", color:"#E5E7EB", fontWeight:600, fontSize:"10px", textAlign:"left", minWidth:"160px" }}>Descripción</th>
+                  <th style={{ padding:"5px 8px", color:"#E5E7EB", fontWeight:600, fontSize:"10px", textAlign:"right", whiteSpace:"nowrap" }}>Diferencia</th>
+                  <th style={{ padding:"5px 8px", color:"#E5E7EB", fontWeight:600, fontSize:"10px", textAlign:"center", whiteSpace:"nowrap", width:"60px" }}>PCK/CJ</th>
+                  <th style={{ padding:"5px 8px", color:"#E5E7EB", fontWeight:600, fontSize:"10px", textAlign:"center", whiteSpace:"nowrap", width:"70px" }}>Uds/Pale</th>
+                  {centros.map(({key, color}) => (
+                    <React.Fragment key={key}>
+                      <th style={{ padding:"5px 8px", color:"#E5E7EB", fontWeight:700, fontSize:"12px", textAlign:"center", borderLeft:"2px solid #525260", whiteSpace:"nowrap" }}>Libre</th>
+                      <th style={{ padding:"5px 8px", color:"#E5E7EB", fontWeight:700, fontSize:"12px", textAlign:"center", whiteSpace:"nowrap" }}>Bloq.</th>
+                      <th style={{ padding:"5px 8px", color:"#E5E7EB", fontWeight:700, fontSize:"12px", textAlign:"center", whiteSpace:"nowrap" }}>UMB</th>
+                      <th style={{ padding:"5px 8px", color, fontWeight:700, fontSize:"10px", textAlign:"center", whiteSpace:"nowrap" }}>Pales</th>
+                    </React.Fragment>
+                  ))}
+                  {showCentrosClientes && <th style={{ padding:"5px 8px", color:"#E5E7EB", fontWeight:700, fontSize:"12px", textAlign:"left", borderLeft:"2px solid #525260" }}>Clientes</th>}
+                </tr>
+              </thead>
+              <tbody>
+                {criticos.map(({fac, r, clientes}, idx) => {
+                  const inp = paleInputs[r.cod] || {};
+                  const pck = parseFloat(inp.pckCj) || 0;
+                  const uPale = parseFloat(inp.uPale) || 0;
+                  // Get UMB from any centro that has this code
+                  const umb = centrosData.ar2?.[r.cod]?.umb || centrosData.ar1?.[r.cod]?.umb || centrosData.moras?.[r.cod]?.umb || "";
+                  const centrosLoaded = Object.values(centrosData).some(v => v !== null);
+                  const hasMoras = fac.id !== "moras" && centrosData.moras?.[r.cod] && (centrosData.moras[r.cod].libre > 0 || centrosData.moras[r.cod].bloq > 0);
+                  const hasAr2  = centrosData.ar2?.[r.cod]  && (centrosData.ar2[r.cod].libre  > 0 || centrosData.ar2[r.cod].bloq  > 0);
+                  const hasAr1  = centrosData.ar1?.[r.cod]  && (centrosData.ar1[r.cod].libre  > 0 || centrosData.ar1[r.cod].bloq  > 0);
+                  const hasAny = hasMoras || hasAr2 || hasAr1;
+                  const rowBg = !hasAny && centrosLoaded ? "#1a0505" : idx%2===0 ? "#18181F" : "#0D0D12";
+
+                  const renderCentroCell = (centroKey) => {
+                    const available = !(centroKey === "moras" && fac.id === "moras");
+                    const data = centrosData[centroKey]?.[r.cod];
+                    const inp = paleInputs[r.cod] || {};
+                    const pck = parseFloat(inp.pckCj) || 0;
+                    const uPale = parseFloat(inp.uPale) || 0;
+                    if (!available) return (
+                      <React.Fragment key={centroKey}>
+                        <td colSpan={4} style={{ padding:"5px 8px", textAlign:"center", color:"#3A3A4A", borderLeft:"2px solid #2A2A3A", fontSize:"11px" }}>—</td>
+                      </React.Fragment>
+                    );
+                    const lib = data?.libre || 0;
+                    const blq = data?.bloq  || 0;
+                    const umb = data?.umb   || "";
+                    const palesVal = data ? calcPales(lib, umb, pck, uPale) : null;
+                    return (
+                      <React.Fragment key={centroKey}>
+                        <td style={{ padding:"5px 8px", textAlign:"center", color: lib>0?"#34D399":"#9CA3AF", fontWeight: lib>0?700:400, borderLeft:"2px solid #2A2A3A", fontFamily:"'DM Mono','Courier New',monospace", fontSize:"12px" }}>{lib.toLocaleString()}</td>
+                        <td style={{ padding:"5px 8px", textAlign:"center", color: blq>0?"#F87171":"#9CA3AF", fontWeight: blq>0?700:400, fontFamily:"'DM Mono','Courier New',monospace", fontSize:"12px" }}>{blq.toLocaleString()}</td>
+                        <td style={{ padding:"5px 8px", textAlign:"center", color:"#9CA3AF", fontSize:"10px", fontFamily:"'DM Mono','Courier New',monospace" }}>{umb||"—"}</td>
+                        <td style={{ padding:"5px 8px", textAlign:"center", color: palesVal&&parseFloat(palesVal)>0?"#06B6D4":"#4B5563", fontWeight:700, fontFamily:"'DM Mono','Courier New',monospace", fontSize:"12px" }}>{palesVal||"—"}</td>
+                      </React.Fragment>
+                    );
+                  };
+
+                  return (
+                    <tr key={idx} style={{ borderBottom:"1px solid #3A3A4F", background:rowBg }}>
+                      <td style={{ padding:"5px 8px", whiteSpace:"nowrap" }}>
+                        <span style={{ color:fac.color, fontWeight:700, fontSize:"12px" }}>{fac.label}</span>
+                      </td>
+                      <td style={{ padding:"5px 8px", whiteSpace:"nowrap" }}>
+                        <span style={{ color: !hasAny && centrosLoaded ? "#F87171" : "#F59E0B", fontWeight:700, fontFamily:"'DM Mono','Courier New',monospace", fontSize:"12px" }}>{r.cod}</span>
+                        {!hasAny && centrosLoaded && <span style={{ marginLeft:"6px", fontSize:"10px", color:"#FF4444", fontWeight:700, background:"#3D0000", padding:"1px 5px", borderRadius:"3px", border:"1px solid #FF4444" }}>⚠ Sin alt.</span>}
+                      </td>
+                      <td style={{ padding:"5px 8px", color:"#D1D5DB", fontSize:"11px", maxWidth:"180px", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{centrosData.ar2?.[r.cod]?.desc || centrosData.ar1?.[r.cod]?.desc || centrosData.moras?.[r.cod]?.desc || ""}</td>
+                      <td style={{ padding:"5px 8px", textAlign:"right", color:"#EF4444", fontWeight:700, fontFamily:"'DM Mono','Courier New',monospace", fontSize:"12px", whiteSpace:"nowrap" }}>{(r.diff??0).toFixed(2)}</td>
+                      <td style={{ padding:"3px 4px", textAlign:"center" }}>
+                        <input type="number" min="1" placeholder="—"
+                          style={{ background:"#1C1C2A", border:"1px solid #44444F", borderRadius:"4px", color:"#F3F4F6", fontSize:"11px", width:"50px", textAlign:"center", outline:"none", padding:"3px 4px", fontFamily:"inherit" }}
+                          value={inp.pckCj||""}
+                          onChange={e => setPaleInput(r.cod,"pckCj",e.target.value)} />
+                      </td>
+                      <td style={{ padding:"3px 4px", textAlign:"center" }}>
+                        <input type="number" min="1" placeholder="—"
+                          style={{ background:"#1C1C2A", border:"1px solid #44444F", borderRadius:"4px", color:"#F3F4F6", fontSize:"11px", width:"56px", textAlign:"center", outline:"none", padding:"3px 4px", fontFamily:"inherit" }}
+                          value={inp.uPale||""}
+                          onChange={e => setPaleInput(r.cod,"uPale",e.target.value)} />
+                      </td>
+                      {centros.map(({key}) => renderCentroCell(key))}
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  const renderPlanificacion = () => (
+    <div style={{ padding:"0 4px" }}>
+      {/* Header */}
+      <div style={{ display:"flex", alignItems:"center", gap:"14px", marginBottom:"16px", flexWrap:"wrap" }}>
+        <label style={{ ...C.btn("#10B981"), cursor:"pointer", display:"inline-block", fontSize:"12px" }}>
+          📂 CARGAR PLANIFICACIÓN
+          <input type="file" accept=".xlsx,.xls" style={{ display:"none" }}
+            onChange={e => {
+              const file = e.target.files[0]; if (!file) return;
+              const reader = new FileReader();
+              reader.onload = ev => parsePlanXlsx(ev.target.result);
+              reader.readAsArrayBuffer(file);
+              e.target.value = "";
+            }} />
+        </label>
+        {planFecha && <span style={{ fontSize:"11px", color:"#6ee7a0" }}>Cargado {planFecha} · {planData.length} turnos</span>}
+      </div>
+
+      {planData.length === 0 && (
+        <div style={{ color:"#606070", textAlign:"center", padding:"60px", fontSize:"14px" }}>
+          Carga el archivo Excel de planificación de envasado
+        </div>
+      )}
+
+      {planData.length > 0 && (() => {
+        // Group by grupo
+        const byGrupo = {};
+        planData.forEach(p => {
+          if (!byGrupo[p.grupo]) byGrupo[p.grupo] = [];
+          byGrupo[p.grupo].push(p);
+        });
+        // Get critical codes from both factories
+        const criticosCodes = new Set([
+          ...(dayData.agrela?.sapCriticos||[]).map(r=>r.cod),
+          ...(dayData.moras?.sapCriticos||[]).map(r=>r.cod)
+        ]);
+
+        return (
+          <div style={{ display:"flex", flexDirection:"column", gap:"12px" }}>
+            {Object.entries(byGrupo).map(([grupo, turnos]) => (
+              <div key={grupo} style={{ background:"#1A1A1F", border:"1px solid #44444F", borderRadius:"8px", overflow:"hidden" }}>
+                <div style={{ background:"#202028", padding:"8px 14px", fontWeight:700, color:"#10B981", fontSize:"12px", letterSpacing:"0.06em" }}>
+                  {grupo}
+                </div>
+                <table style={{ borderCollapse:"collapse", fontSize:"12px", tableLayout:"fixed", width:"auto", minWidth:"100%" }}>
+                  <thead>
+                    <tr style={{ background:"#16161C" }}>
+                      {[
+                        {h:"Día",w:"42px"},{h:"Código",w:"58px"},{h:"Descripción",w:"280px"},{h:"Inicio",w:"110px"},{h:"Fin",w:"110px"}
+                      ].map(({h,w}) => <th key={h} style={{ padding:"5px 8px", textAlign:"left", color:"#9CA3AF", fontWeight:600, fontSize:"11px", width:w }}>{h}</th>)}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {turnos.map((t,ti) => {
+                      const esCritico = criticosCodes.has(t.cod);
+                      return (
+                        <tr key={ti} style={{ borderBottom:"1px solid #2A2A35", background: esCritico ? "#1a0f00" : "transparent" }}>
+                          <td style={{ padding:"4px 8px", color:"#9CA3AF", whiteSpace:"nowrap", fontSize:"11px" }}>{t.dia}</td>
+                          <td style={{ padding:"4px 8px", color: esCritico ? "#F59E0B" : "#FFFFFF", fontWeight: esCritico ? 700 : 400, fontSize:"11px" }}>{t.cod}</td>
+                          <td style={{ padding:"4px 8px", color:"#E5E7EB", fontSize:"11px", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{t.desc}</td>
+                          <td style={{ padding:"4px 8px", color:"#6ee7a0", whiteSpace:"nowrap", fontWeight:600, fontSize:"11px" }}>{t.hi}</td>
+                          <td style={{ padding:"4px 8px", color:"#fca5a5", whiteSpace:"nowrap", fontSize:"11px" }}>{t.hf}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            ))}
+          </div>
+        );
+      })()}
+    </div>
+  );
+
+  const renderGeneric = (secId) => (
+    <div style={C.row}>
+      {FACTORIES.map(fac => (
+        <FactoryPanel key={fac.id} factory={fac}>
+          <input style={{ ...C.input, marginBottom:"6px" }} placeholder="Título / Referencia..."
+            value={entry[fac.id].titulo} onChange={e => setEntry(p => ({ ...p, [fac.id]: { ...p[fac.id], titulo: e.target.value } }))} />
+          <textarea style={{ ...C.textarea, marginBottom:"6px" }} placeholder="Descripción..."
+            value={entry[fac.id].texto} onChange={e => setEntry(p => ({ ...p, [fac.id]: { ...p[fac.id], texto: e.target.value } }))} />
+          <button style={C.btn(fac.color)} onClick={() => addEntry(secId, fac.id)}>+ AÑADIR</button>
+          <EntryList entries={dayData[fac.id]?.[secId]} onDelete={i => deleteEntry(secId, fac.id, i)} color={fac.color} />
+        </FactoryPanel>
+      ))}
+    </div>
+  );
+
+  const renderResumen = () => {
+    const savedAt = dayData._resumenGuardado;
+    const guardarResumen = async () => {
+      const snap = JSON.parse(JSON.stringify(dayData));
+      snap._resumenGuardado = new Date().toLocaleTimeString("es-ES",{hour:"2-digit",minute:"2-digit"});
+            showSaved("✓ Resumen guardado " + snap._resumenGuardado);
+    };
+    return (
+      <div>
+        <div style={{ display:"flex", alignItems:"center", gap:"14px", marginBottom:"16px", padding:"12px 16px", background:"#202028", borderRadius:"10px", border:"1px solid #44444F" }}>
+          <button onClick={guardarResumen} style={{ background:"#A3E635", border:"none", color:"#111", borderRadius:"8px", padding:"10px 24px", cursor:"pointer", fontWeight:800, fontSize:"13px", letterSpacing:"0.06em", fontFamily:"inherit" }}>
+            💾 GUARDAR RESUMEN
+          </button>
+          {savedAt
+            ? <span style={{ color:"#A3E635", fontSize:"12px", fontWeight:600 }}>✓ Guardado a las {savedAt}</span>
+            : <span style={{ color:"#606070", fontSize:"12px" }}>Pulsa para guardar una instantánea del día</span>
+          }
+        </div>
+        <div style={C.row}>
+          {FACTORIES.map(fac => {
+            const fd = dayData[fac.id] || {};
+            const hasMeta   = fd.transporteMeta && (fd.transporteMeta && Object.values(fd.transporteMeta).some(Boolean));
+            const hasStocks = fd.stocksMeta     && (fd.stocksMeta && Object.values(fd.stocksMeta).some(Boolean));
+            const hasEnt    = ENTRY_SECTIONS.some(s => fd[s]?.length > 0);
+            return (
+              <div key={fac.id} style={{ flex:1, minWidth:0, background:"#161620", border:`1px solid ${fac.color}44`, borderTop:`2px solid ${fac.color}`, borderRadius:"12px", padding:"16px" }}>
+                <div style={{ fontWeight:700, color:fac.color, fontSize:"13px", marginBottom:"14px", textTransform:"uppercase", letterSpacing:"0.08em" }}>
+                  🏭 {fac.label} — {formatDate(selectedDate)}
+                </div>
+                {!hasMeta && !hasStocks && !hasEnt && <p style={{ color:"#F9FAFB", fontStyle:"italic", fontSize:"12px" }}>Sin datos registrados.</p>}
+
+                {/* Transport */}
+                {(hasMeta || fd.transporte?.length > 0 || fd.pendientesLista?.length > 0) && (
+                  <div style={{ marginBottom:"12px" }}>
+                    <div style={{ fontSize:"10px", fontWeight:700, color:"#F59E0B", textTransform:"uppercase", marginBottom:"6px" }}>🚛 Transporte</div>
+                    <div style={{ display:"flex", gap:"8px", marginBottom:"6px", flexWrap:"wrap" }}>
+                      {[["Totales",fd.transporteMeta?.totales],["Pendientes",fd.transporteMeta?.pendientes],["Nocturnas",fd.transporteMeta?.nocturnas]].map(([lbl,val]) => val ? (
+                        <div key={lbl} style={{ background:"#16161C", borderRadius:"6px", padding:"5px 10px", textAlign:"center" }}>
+                          <div style={{ fontSize:"9px", color:"#F9FAFB" }}>{lbl}</div>
+                          <div style={{ fontSize:"20px", fontWeight:700, color:"#F59E0B" }}>{val}</div>
+                        </div>
+                      ) : null)}
+                    </div>
+                    {fd.transporteMeta?.notas && <div style={{ color:"#FFFFFF", fontSize:"12px", marginBottom:"4px" }}>{fd.transporteMeta.notas}</div>}
+                    {(fd.transporte||[]).map((e,i) => (
+                      <div key={i} style={{ borderBottom:"1px solid #44444F", padding:"3px 0", color:"#FFFFFF", fontSize:"12px" }}>
+                        {e.titulo && <strong>{e.titulo}: </strong>}{e.texto}
+                      </div>
+                    ))}
+                    {fd.pendientesLista?.length > 0 && (
+                      <div style={{ marginTop:"6px" }}>
+                        <div style={{ fontSize:"10px", color:"#9CA3AF", marginBottom:"6px" }}>CAMIONES PENDIENTES</div>
+                        <div style={{ display:"flex", gap:"10px", flexWrap:"wrap", alignItems:"flex-start" }}>
+                          {fd.pendientesLista.map((item,idx) => (
+                            <div key={idx} style={{ flex:"1 1 300px", minWidth:0 }}>
+                              {item.titulo && <div style={{ color:"#F59E0B", fontWeight:700, fontSize:"11px", marginBottom:"3px" }}>{item.titulo} <span style={{ color:"#9CA3AF", fontWeight:400 }}>{item.hora}</span></div>}
+                              {item.tipo==="img" && <img src={item.data} style={{ maxWidth:"100%", borderRadius:"4px" }} />}
+                              {item.tipo==="tabla" && (
+                                <div style={{ overflowX:"auto" }}>
+                                  <table style={{ borderCollapse:"collapse", fontSize:"11px" }}>
+                                    <tbody>
+                                      {item.data.map((row,ri) => (
+                                        <tr key={ri} style={{ borderBottom:"1px solid #36363F", background:ri%2===0?"#13131A":"transparent" }}>
+                                          {row.map((cell,ci) => <td key={ci} style={{ padding:"2px 4px", color:"#FFFFFF", whiteSpace:"nowrap", fontSize:"11px" }}>{cell}</td>)}
+                                        </tr>
+                                      ))}
+                                    </tbody>
+                                  </table>
+                                </div>
+                              )}
+                              {item.tipo==="texto" && <div style={{ color:"#FFFFFF", fontSize:"11px", whiteSpace:"pre-wrap" }}>{item.data}</div>}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Stocks */}
+                {(hasStocks || fd.stocks?.length > 0 || fd.sapCriticos?.length > 0) && (
+                  <div style={{ marginBottom:"12px" }}>
+                    <div style={{ fontSize:"10px", fontWeight:700, color:"#3B82F6", textTransform:"uppercase", marginBottom:"6px" }}>📦 Stocks</div>
+                    {fd.stocksMeta?.nivel && <div style={{ color:"#FFFFFF", fontSize:"12px" }}>Nivel: <strong style={{ color:"#3B82F6", fontSize:"16px" }}>{fd.stocksMeta.nivel}%</strong></div>}
+                    {fd.stocksMeta?.alertas && <div style={{ color:"#FFFFFF", fontSize:"12px" }}>{fd.stocksMeta.alertas}</div>}
+                    {fd.sapCriticos?.length > 0 && (
+                      <div style={{ marginTop:"6px" }}>
+                        <div style={{ fontSize:"10px", color:"#EF4444", fontWeight:700, marginBottom:"6px" }}>⚠️ {fd.sapCriticos.length} REFERENCIAS CRÍTICAS</div>
+                        <table style={{ borderCollapse:"collapse", fontSize:"12px", width:"100%" }}>
+                          <thead>
+                            <tr style={{ borderBottom:"1px solid #44444F" }}>
+                              {["Cód.","Dif.","Grupo","Hora","Situación","Detalle","Comentarios"].map(h => (
+                                <th key={h} style={{ padding:"3px 8px", textAlign:"left", color:"#9CA3AF", fontWeight:600, fontSize:"10px", whiteSpace:"nowrap" }}>{h}</th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {sortCriticos(fd.sapCriticos).map((r,i) => {
+                              const ll = fd.sapLlenado?.[r.cod] || {};
+                              const situTxt = Object.fromEntries(situOpciones.map(s=>([s.label,s.txt])));
+                              const codColor = ll.situacion ? situTxt[ll.situacion] : "#F59E0B";
+                              return (
+                                <tr key={i} style={{ borderBottom:"1px solid #36363F", background:i%2===0?"#13131A":"transparent" }}>
+                                  <td style={{ padding:"3px 8px", color:codColor, fontWeight:700, whiteSpace:"nowrap" }}>{r.cod}</td>
+                                  <td style={{ padding:"3px 8px", color:"#EF4444", fontWeight:700, whiteSpace:"nowrap" }}>{(r.diff??0).toFixed(2)}</td>
+                                  <td style={{ padding:"3px 8px", color:ll.situacion ? situTxt[ll.situacion] : "#9CA3AF", fontWeight:700 }}>{ll.grupo||"—"}</td>
+                                  <td style={{ padding:"3px 8px", color:"#9CA3AF", whiteSpace:"nowrap" }}>{ll.hora||"—"}</td>
+                                  <td style={{ padding:"3px 8px", color:situTxt[ll.situacion]||"#9CA3AF", fontWeight:ll.situacion?700:400, whiteSpace:"nowrap" }}>{ll.situacion||"—"}</td>
+                              <td style={{ padding:"3px 8px", color:situTxt[ll.situacion]||"#9CA3AF", fontSize:"11px" }}>{ll.detalle||"—"}</td>
+                                  <td style={{ padding:"3px 8px", color:"#FFFFFF" }}>{ll.comentario||""}</td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                    {(fd.stocks||[]).map((e,i) => <div key={i} style={{ borderBottom:"1px solid #44444F", padding:"3px 0", color:"#FFFFFF", fontSize:"12px" }}>{e.titulo && <strong>{e.titulo}: </strong>}{e.texto}</div>)}
+                  </div>
+                )}
+
+                {/* Almacén */}
+                {(fd.almacen?.length > 0 || (fac.id==="agrela" && fd.celdas?.length > 0)) && (
+                  <div style={{ marginBottom:"12px" }}>
+                    <div style={{ fontSize:"10px", fontWeight:700, color:"#EF4444", textTransform:"uppercase", marginBottom:"6px" }}>🏭 Almacén Auto.</div>
+                    {fac.id==="agrela" && fd.celdas?.length > 0 && (
+                      <div style={{ marginBottom:"6px" }}>
+                        <div style={{ fontSize:"10px", color:"#9CA3AF", marginBottom:"3px" }}>CELDAS VACÍAS</div>
+                        {fd.celdas.map((c,i) => (
+                          <div key={i} style={{ display:"flex", gap:"10px", borderBottom:"1px solid #44444F", padding:"3px 0", fontSize:"12px" }}>
+                            <strong style={{ color:"#EF4444", fontSize:"15px" }}>{c.val}</strong>
+                            <span style={{ color:"#9CA3AF" }}>{c.hora}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {(fd.almacen||[]).map((e,i) => <div key={i} style={{ borderBottom:"1px solid #44444F", padding:"3px 0", color:"#FFFFFF", fontSize:"12px" }}>{e.titulo && <strong>{e.titulo}: </strong>}{e.texto}<span style={{ color:"#9CA3AF", fontSize:"10px", marginLeft:"6px" }}>{e.hora}</span></div>)}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    );
+  };
+
+  const renderHistorico = () => {
+    if (histLoading) return <div style={{ textAlign:"center", color:"#F9FAFB", padding:"60px" }}>Cargando histórico...</div>;
+    if (!histDays.length) return <div style={{ textAlign:"center", color:"#F9FAFB", padding:"60px", fontStyle:"italic" }}>No hay datos guardados aún.</div>;
+
+    const renderList = () => (
+      <div style={{ display:"flex", flexDirection:"column", gap:"6px" }}>
+        {histDays.map(({ date, data }) => {
+          const totalE = FACTORIES.reduce((n,f) => n + ENTRY_SECTIONS.reduce((m,s) => m + (data[f.id]?.[s]?.length||0), 0), 0);
+          return (
+            <div key={date} onClick={() => { setSelectedDate(date); setActiveSection("resumen"); }}
+              style={{ background:"#202028", border:"1px solid #44444F", borderRadius:"8px", padding:"10px 14px", cursor:"pointer", display:"flex", alignItems:"center", gap:"12px" }}>
+              <div style={{ fontWeight:700, color: date===todayStr()?"#F59E0B":"#E5E7EB", fontSize:"13px", minWidth:"90px" }}>
+                {date===todayStr() ? "HOY" : formatDate(date)}
+              </div>
+              <div style={{ display:"flex", gap:"8px", flex:1, flexWrap:"wrap" }}>
+                {FACTORIES.map(fac => {
+                  const tm = data[fac.id]?.transporteMeta;
+                  const entN = ENTRY_SECTIONS.reduce((n,s) => n+(data[fac.id]?.[s]?.length||0), 0);
+                  return (
+                    <div key={fac.id} style={{ fontSize:"11px", color:"#FFFFFF", background:"#16161C", borderRadius:"4px", padding:"2px 8px" }}>
+                      <span style={{ color:fac.color, fontWeight:700 }}>{fac.label}</span>
+                      {tm?.cargados ? ` · 🚛${tm.cargados}` : ""}
+                      {entN > 0 ? ` · ${entN} notas` : ""}
+                    </div>
+                  );
+                })}
+              </div>
+              <div style={{ fontSize:"10px", color:"#F9FAFB", whiteSpace:"nowrap" }}>{totalE} entradas →</div>
+            </div>
+          );
+        })}
+      </div>
+    );
+
+    const renderSearch = () => {
+      const q = searchQ.toLowerCase().trim();
+      if (!q) return <p style={{ color:"#F9FAFB", fontSize:"12px", fontStyle:"italic" }}>Escribe algo para buscar entre todas las anotaciones.</p>;
+      const results = [];
+      histDays.forEach(({ date, data }) => {
+        FACTORIES.forEach(fac => {
+          const fd = data[fac.id]||{};
+          ENTRY_SECTIONS.forEach(secId => {
+            (fd[secId]||[]).forEach(e => {
+              if (`${e.titulo||""} ${e.texto||""}`.toLowerCase().includes(q)) {
+                results.push({ date, fac, sec: SECTIONS.find(s=>s.id===secId), e });
+              }
+            });
+          });
+          if (fd.transporteMeta?.notas?.toLowerCase().includes(q))
+            results.push({ date, fac, sec: SECTIONS[0], e: { titulo:"Nota transporte", texto: fd.transporteMeta.notas, hora:"" } });
+        });
+      });
+      if (!results.length) return <p style={{ color:"#F9FAFB", fontSize:"12px", fontStyle:"italic" }}>Sin resultados para "{searchQ}".</p>;
+      return (
+        <div style={{ display:"flex", flexDirection:"column", gap:"6px" }}>
+          <div style={{ fontSize:"11px", color:"#F9FAFB", marginBottom:"4px" }}>{results.length} resultado{results.length!==1?"s":""}</div>
+          {results.map((r,i) => (
+            <div key={i} style={{ background:"#202028", border:"1px solid #44444F", borderLeft:`3px solid ${r.fac.color}`, borderRadius:"6px", padding:"8px 12px" }}>
+              <div style={{ display:"flex", gap:"8px", alignItems:"center", marginBottom:"4px" }}>
+                <span style={{ fontSize:"10px", fontWeight:700, color:r.fac.color }}>{r.fac.label}</span>
+                <span style={{ fontSize:"10px", color:r.sec.color }}>{r.sec.icon} {r.sec.label}</span>
+                <span style={{ fontSize:"10px", color:"#F9FAFB", marginLeft:"auto" }}>{formatDate(r.date)}</span>
+              </div>
+              {r.e.titulo && <div style={{ color:"#FFFFFF", fontSize:"12px", fontWeight:600 }}>{r.e.titulo}</div>}
+              {r.e.texto  && <div style={{ color:"#FFFFFF", fontSize:"12px" }}>{r.e.texto}</div>}
+            </div>
+          ))}
+        </div>
+      );
+    };
+
+    const renderCompare = (groupFn, label) => {
+      const groups = {};
+      histDays.forEach(({ date, data }) => {
+        const key = groupFn(date);
+        if (!groups[key]) groups[key] = [];
+        groups[key].push({ date, data });
+      });
+      return (
+        <div style={{ display:"flex", flexDirection:"column", gap:"12px" }}>
+          {Object.keys(groups).sort((a,b) => b.localeCompare(a)).map(gKey => {
+            const days = groups[gKey];
+            const gLabel = label==="semana"
+              ? `Sem. ${formatDate(gKey.split("__")[0])} – ${formatDate(gKey.split("__")[1])}`
+              : (() => { const [y,m]=gKey.split("-"); return `${["","Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct","Nov","Dic"][+m]} ${y}`; })();
+            return (
+              <div key={gKey} style={{ background:"#202028", border:"1px solid #44444F", borderRadius:"10px", overflow:"hidden" }}>
+                <div style={{ background:"#1E1E21", padding:"8px 14px", fontSize:"11px", fontWeight:700, color:"#E879F9", textTransform:"uppercase", letterSpacing:"0.08em" }}>{gLabel}</div>
+                <div style={{ overflowX:"auto" }}>
+                  <table style={{ width:"100%", borderCollapse:"collapse", fontSize:"12px" }}>
+                    <thead>
+                      <tr style={{ borderBottom:"1px solid #44444F" }}>
+                        <th style={{ padding:"6px 12px", textAlign:"left", color:"#F9FAFB", fontWeight:600, whiteSpace:"nowrap" }}>Fecha</th>
+                        {FACTORIES.map(fac => (<React.Fragment key={fac.id}>
+                          <th style={{ padding:"6px 8px", color:fac.color, fontWeight:700, whiteSpace:"nowrap" }}>{fac.label} 🚛C</th>
+                          <th style={{ padding:"6px 8px", color:`${fac.color}99`, fontWeight:600, whiteSpace:"nowrap" }}>Pend.</th>
+                          <th style={{ padding:"6px 8px", color:`${fac.color}66`, fontWeight:600, whiteSpace:"nowrap" }}>Noct.</th>
+                          <th style={{ padding:"6px 8px", color:"#F9FAFB", fontWeight:600, whiteSpace:"nowrap" }}>Inc.</th>
+                        </React.Fragment>))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {days.map(({ date, data }) => (
+                        <tr key={date} onClick={() => { setSelectedDate(date); setActiveSection("resumen"); }} style={{ borderBottom:"1px solid #1E1E21", cursor:"pointer" }}>
+                          <td style={{ padding:"6px 12px", color:"#FFFFFF", whiteSpace:"nowrap" }}>{formatDate(date)}</td>
+                          {FACTORIES.map(fac => {
+                            const tm = data[fac.id]?.transporteMeta||{};
+                            const inc = ENTRY_SECTIONS.reduce((n,s) => n+(data[fac.id]?.[s]?.length||0), 0);
+                            return (<React.Fragment key={fac.id}>
+                              <td style={{ padding:"6px 8px", textAlign:"center", color:"#F59E0B", fontWeight:700 }}>{tm.cargados||"—"}</td>
+                              <td style={{ padding:"6px 8px", textAlign:"center", color:"#FFFFFF" }}>{tm.pendientes||"—"}</td>
+                              <td style={{ padding:"6px 8px", textAlign:"center", color:"#FFFFFF" }}>{tm.nocturnas||"—"}</td>
+                              <td style={{ padding:"6px 8px", textAlign:"center", color: inc>0?"#F97316":"#52525B" }}>{inc||"—"}</td>
+                            </React.Fragment>);
+                          })}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      );
+    };
+
+    return (
+      <div>
+        <div style={{ display:"flex", gap:"8px", marginBottom:"16px", flexWrap:"wrap", alignItems:"center" }}>
+          {[["list","📋 Listado"],["semana","📆 Por semana"],["mes","🗓 Por mes"],["search","🔍 Buscar"]].map(([v,lbl]) => (
+            <button key={v} onClick={() => setHistView(v)} style={histView===v ? C.btn("#E879F9") : C.btnO("#E879F9")}>{lbl}</button>
+          ))}
+          <div style={{ marginLeft:"auto" }}>
+            <button onClick={() => exportCSV(histDays)} style={C.btnO("#A3E635")}>⬇ Exportar CSV</button>
+          </div>
+        </div>
+        {histView==="search" && (
+          <div style={{ marginBottom:"14px" }}>
+            <input style={{ ...C.input, fontSize:"14px", padding:"10px 14px" }} placeholder="Buscar en todas las anotaciones..."
+              value={searchQ} onChange={e => setSearchQ(e.target.value)} autoFocus />
+          </div>
+        )}
+        {histView==="list"   && renderList()}
+        {histView==="semana" && renderCompare(weekOf,"semana")}
+        {histView==="mes"    && renderCompare(monthOf,"mes")}
+        {histView==="search" && renderSearch()}
+      </div>
+    );
+  };
+
+    if (appError) return <div style={{color:"#EF4444",padding:"20px",fontFamily:"monospace",whiteSpace:"pre-wrap"}}>{String(appError)}</div>;
+
+  return (
+    <div style={{ minHeight:"100vh", background: "#111116", color: "#FFFFFF", fontFamily:"'Outfit','DM Sans',system-ui,sans-serif", display:"flex", flexDirection:"column" }}>
+      {/* Header */}
+      <div style={{ background: "#111116", borderBottom: "1px solid #44444F", padding:"12px 20px", display:"flex", alignItems:"center", justifyContent:"space-between", position:"sticky", top:0, zIndex:10 }}>
+        <div style={{ fontSize:"18px", fontWeight:700, color:"#F59E0B", letterSpacing:"0.06em" }}>⬛ DIARIO</div>
+        <div style={{ display:"flex", alignItems:"center", gap:"8px" }}>
+          <button onClick={() => setSelectedDate(offsetDate(selectedDate,-1))} style={{ background:"#27272A", border:"none", color:"#FFFFFF", borderRadius:"6px", padding:"5px 10px", cursor:"pointer", fontSize:"16px" }}>‹</button>
+          <div style={{ background:"#27272A", borderRadius:"6px", padding:"5px 14px", fontSize:"13px", fontWeight:600, color: isToday?"#F59E0B":"#E5E7EB", minWidth:"100px", textAlign:"center" }}>
+            {isToday ? "HOY" : formatDate(selectedDate)}
+          </div>
+          <button onClick={() => setSelectedDate(offsetDate(selectedDate,1))} disabled={isToday}
+            style={{ background:"#27272A", border:"none", color: isToday?"#3F3F46":"#9CA3AF", borderRadius:"6px", padding:"5px 10px", cursor: isToday?"default":"pointer", fontSize:"16px" }}>›</button>
+        </div>
+        <button onClick={() => setShowConfig(true)} style={{ background:"#27272A", border:"none", color:"#9CA3AF", borderRadius:"6px", padding:"5px 10px", cursor:"pointer", fontSize:"16px" }} title="Configuración">⚙️</button>
+        <div style={{ fontSize:"11px", color: savedMsg?"#A3E635":"#52525B", minWidth:"160px", textAlign:"right", transition:"color 0.3s" }}>
+          {savedMsg || "A Grela  •  Moras"}
+        </div>
+      </div>
+      {/* Tabs */}
+      <div style={{ display:"flex", overflowX:"auto", background: "#16161C", borderBottom: "1px solid #1E1E2A", padding:"0 12px", gap:"2px" }}>
+        {SECTIONS.map(sec => {
+          const active = activeSection===sec.id;
+          const count  = !["resumen","historico","stocks_agrela","stocks_moras"].includes(sec.id) ? sectionCount(sec.id) : null;
+          return (
+            <button key={sec.id}
+              onClick={() => { setActiveSection(sec.id); setEntry({ agrela:emptyEntry(), moras:emptyEntry() }); }}
+              style={{ padding:"12px 20px", cursor:"pointer", background: active ? sec.color+"15" : "none", border:"none", borderBottom: active?"3px solid "+sec.color:"3px solid transparent", color: active ? sec.color : "#E5E7EB", fontWeight: active?800:500, fontSize:"14px", whiteSpace:"nowrap", letterSpacing:"0.05em", fontFamily:"inherit", transition:"all 0.2s", borderRadius:active?"6px 6px 0 0":"0" }}>
+              <span style={{fontSize:"16px",marginRight:"5px"}}>{sec.icon}</span><span style={{letterSpacing:"0.06em"}}>{sec.label.toUpperCase()}</span>
+              {count>0 && <Badge count={count} color={sec.color} />}
+            </button>
+          );
+        })}
+      </div>
+      {/* Content */}
+      <div style={{ flex:1, padding:"16px 20px", maxWidth: ["stocks_agrela","stocks_moras"].includes(activeSection) ? "100%" : "1200px", width:"100%", margin:"0 auto", boxSizing:"border-box" }}>
+        {loading && activeSection!=="historico" ? (
+          <div style={{ textAlign:"center", color:"#F9FAFB", padding:"60px" }}>Cargando...</div>
+        ) : (
+          <div>
+            {activeSection==="transporte"    && renderTransporte()}
+            {activeSection==="stocks_agrela"  && renderStocksFac("agrela")}
+            {activeSection==="stocks_moras"   && renderStocksFac("moras")}
+            {activeSection==="almacen" && renderAlmacen()}
+            {activeSection==="planificacion" && renderPlanificacion()}
+            {activeSection==="centros" && renderCentros()}
+          </div>
+        )}
+      </div>
+      {/* Config Modal */}
+      {showConfig && (
+        <div onClick={e => { if(e.target===e.currentTarget) setShowConfig(false); }}
+          style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.75)", zIndex:100, display:"flex", alignItems:"center", justifyContent:"center" }}>
+          <div style={{ background:"#1A1A1F", border:"1px solid #44444F", borderRadius:"12px", padding:"24px", width:"480px", maxWidth:"95vw", maxHeight:"85vh", overflowY:"auto" }}>
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:"20px" }}>
+              <div style={{ fontSize:"16px", fontWeight:700, color:"#F3F4F6" }}>⚙️ Configuración</div>
+              <button onClick={() => setShowConfig(false)} style={{ background:"none", border:"none", color:"#9CA3AF", cursor:"pointer", fontSize:"20px", padding:0 }}>×</button>
+            </div>
+            <div style={{ marginBottom:"24px" }}>
+              <div style={{ fontSize:"11px", fontWeight:700, color:"#F97316", textTransform:"uppercase", letterSpacing:"0.08em", marginBottom:"10px" }}>Estados de Situación</div>
+              <div style={{ display:"flex", flexDirection:"column", gap:"6px", marginBottom:"10px" }}>
+                {situOpciones.map((s,idx) => (
+                  <div key={s.label} style={{ display:"flex", alignItems:"center", gap:"8px", background:s.bg, border:"1px solid "+s.border, borderRadius:"6px", padding:"6px 10px" }}>
+                    <span style={{ flex:1, color:s.txt, fontSize:"13px", fontWeight:700 }}>● {s.label}</span>
+                    <div style={{ display:"flex", alignItems:"center", gap:"4px" }}>
+                      <span style={{ fontSize:"9px", color:"#9CA3AF" }}>Txt</span>
+                      <input type="color" value={s.txt}
+                        onChange={e => setSituOpciones(prev => prev.map((x,i)=>i===idx?{...x,txt:e.target.value}:x))}
+                        style={{ width:"24px", height:"20px", border:"none", borderRadius:"3px", cursor:"pointer", padding:0, background:"transparent" }}
+                        title="Color texto" />
+                      <span style={{ fontSize:"9px", color:"#9CA3AF" }}>Fnd</span>
+                      <input type="color" value={s.bg}
+                        onChange={e => setSituOpciones(prev => prev.map((x,i)=>i===idx?{...x,bg:e.target.value}:x))}
+                        style={{ width:"24px", height:"20px", border:"none", borderRadius:"3px", cursor:"pointer", padding:0, background:"transparent" }}
+                        title="Color fondo" />
+                      <span style={{ fontSize:"9px", color:"#9CA3AF" }}>Brd</span>
+                      <input type="color" value={s.border}
+                        onChange={e => setSituOpciones(prev => prev.map((x,ii)=>ii===idx?{...x,border:e.target.value}:x))}
+                        style={{ width:"24px", height:"20px", border:"none", borderRadius:"3px", cursor:"pointer", padding:0, background:"transparent" }}
+                        title="Color borde" />
+                    </div>
+                    <button onClick={() => { const v = prompt("Nuevo nombre:", s.label); if(v&&v.trim()) setSituOpciones(prev => prev.map((x,i)=>i===idx?{...x,label:v.trim()}:x)); }}
+                      style={{ background:"#27272A", border:"none", color:"#9CA3AF", borderRadius:"4px", padding:"3px 8px", cursor:"pointer", fontSize:"11px" }}>✏️</button>
+                    <button onClick={() => setSituOpciones(prev => prev.filter((_,i)=>i!==idx))}
+                      style={{ background:"#3d0f0f", border:"none", color:"#fca5a5", borderRadius:"4px", padding:"3px 8px", cursor:"pointer", fontSize:"11px" }}>✕</button>
+                  </div>
+                ))}
+              </div>
+              <div style={{ display:"flex", gap:"8px" }}>
+                <input style={{ flex:1, background:"#111113", border:"1px solid #3F3F46", borderRadius:"6px", color:"#F3F4F6", padding:"6px 10px", fontSize:"12px", outline:"none", fontFamily:"inherit" }}
+                  placeholder="Nuevo estado..." value={configEdit.situ}
+                  onChange={e => setConfigEdit(p=>({...p, situ:e.target.value}))}
+                  onKeyDown={e => { if(e.key==="Enter"&&configEdit.situ.trim()){setSituOpciones(p=>[...p,{label:configEdit.situ.trim(),bg:"#1e1e24",txt:"#E5E7EB",border:"#52525B"}]);setConfigEdit(p=>({...p,situ:""}));}}}
+                />
+                <button onClick={() => { if(configEdit.situ.trim()){setSituOpciones(p=>[...p,{label:configEdit.situ.trim(),bg:"#1e1e24",txt:"#E5E7EB",border:"#52525B"}]);setConfigEdit(p=>({...p,situ:""}));}}}
+                  style={{ background:"#F97316", border:"none", color:"#111", borderRadius:"6px", padding:"6px 12px", cursor:"pointer", fontWeight:700, fontSize:"12px", fontFamily:"inherit" }}>+ Añadir</button>
+              </div>
+            </div>
+            <div>
+            <div style={{ marginBottom:"24px" }}>
+              <div style={{ fontSize:"11px", fontWeight:700, color:"#38BDF8", textTransform:"uppercase", letterSpacing:"0.08em", marginBottom:"10px" }}>Opciones de Detalle</div>
+              <div style={{ display:"flex", flexDirection:"column", gap:"6px", marginBottom:"10px" }}>
+                {detalleOpciones.map((d,idx) => (
+                  <div key={d} style={{ display:"flex", alignItems:"center", gap:"8px", background:"#111113", borderRadius:"6px", padding:"6px 10px" }}>
+                    <span style={{ flex:1, color:"#F3F4F6", fontSize:"13px" }}>{d}</span>
+                    <button onClick={() => { const v = prompt("Nuevo nombre:", d); if(v&&v.trim()) setDetalleOpciones(prev => prev.map((x,i)=>i===idx?v.trim():x)); }}
+                      style={{ background:"#27272A", border:"none", color:"#9CA3AF", borderRadius:"4px", padding:"3px 8px", cursor:"pointer", fontSize:"11px" }}>✏️</button>
+                    <button onClick={() => setDetalleOpciones(prev => prev.filter((_,i)=>i!==idx))}
+                      style={{ background:"#3d0f0f", border:"none", color:"#fca5a5", borderRadius:"4px", padding:"3px 8px", cursor:"pointer", fontSize:"11px" }}>✕</button>
+                  </div>
+                ))}
+              </div>
+              <div style={{ display:"flex", gap:"8px" }}>
+                <input style={{ flex:1, background:"#111113", border:"1px solid #3F3F46", borderRadius:"6px", color:"#F3F4F6", padding:"6px 10px", fontSize:"12px", outline:"none", fontFamily:"inherit" }}
+                  placeholder="Nueva opción..." value={configEdit.detalle||""}
+                  onChange={e => setConfigEdit(p=>({...p, detalle:e.target.value}))}
+                  onKeyDown={e => { if(e.key==="Enter"&&(configEdit.detalle||"").trim()){setDetalleOpciones(p=>[...p,configEdit.detalle.trim()]);setConfigEdit(p=>({...p,detalle:""}));}}}
+                />
+                <button onClick={() => { if((configEdit.detalle||"").trim()){setDetalleOpciones(p=>[...p,configEdit.detalle.trim()]);setConfigEdit(p=>({...p,detalle:""}));}}}
+                  style={{ background:"#38BDF8", border:"none", color:"#111", borderRadius:"6px", padding:"6px 12px", cursor:"pointer", fontWeight:700, fontSize:"12px", fontFamily:"inherit" }}>+ Añadir</button>
+              </div>
+            </div>
+              <div style={{ fontSize:"11px", fontWeight:700, color:"#8B5CF6", textTransform:"uppercase", letterSpacing:"0.08em", marginBottom:"10px" }}>Grupos de Llenado</div>
+              <div style={{ display:"flex", flexWrap:"wrap", gap:"6px", marginBottom:"10px" }}>
+                {grupoOpciones.map((g,idx) => (
+                  <div key={g} style={{ display:"flex", alignItems:"center", gap:"4px", background:"#111113", borderRadius:"6px", padding:"4px 8px" }}>
+                    <span style={{ color:"#F3F4F6", fontSize:"13px", fontWeight:700 }}>{g}</span>
+                    <button onClick={() => { const v = prompt("Nuevo nombre:", g); if(v&&v.trim()) setGrupoOpciones(prev => prev.map((x,i)=>i===idx?v.trim():x)); }}
+                      style={{ background:"none", border:"none", color:"#9CA3AF", cursor:"pointer", fontSize:"12px", padding:"0 2px" }}>✏️</button>
+                    <button onClick={() => setGrupoOpciones(prev => prev.filter((_,i)=>i!==idx))}
+                      style={{ background:"none", border:"none", color:"#fca5a5", cursor:"pointer", fontSize:"12px", padding:"0 2px" }}>✕</button>
+                  </div>
+                ))}
+              </div>
+              <div style={{ display:"flex", gap:"8px" }}>
+                <input style={{ flex:1, background:"#111113", border:"1px solid #3F3F46", borderRadius:"6px", color:"#F3F4F6", padding:"6px 10px", fontSize:"12px", outline:"none", fontFamily:"inherit" }}
+                  placeholder="Nuevo grupo..." value={configEdit.grupo}
+                  onChange={e => setConfigEdit(p=>({...p, grupo:e.target.value}))}
+                  onKeyDown={e => { if(e.key==="Enter"&&configEdit.grupo.trim()){setGrupoOpciones(p=>[...p,configEdit.grupo.trim()]);setConfigEdit(p=>({...p,grupo:""}));}}}
+                />
+                <button onClick={() => { if(configEdit.grupo.trim()){setGrupoOpciones(p=>[...p,configEdit.grupo.trim()]);setConfigEdit(p=>({...p,grupo:""}));}}}
+                  style={{ background:"#8B5CF6", border:"none", color:"#fff", borderRadius:"6px", padding:"6px 12px", cursor:"pointer", fontWeight:700, fontSize:"12px", fontFamily:"inherit" }}>+ Añadir</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+class ErrorBoundary extends React.Component {
+  constructor(props) { super(props); this.state = { error: null }; }
+  static getDerivedStateFromError(e) { return { error: e }; }
+  render() {
+    if (this.state.error) return (
+      <div style={{ padding:"40px", color:"#ef4444", fontFamily:"monospace", background:"#111", minHeight:"100vh" }}>
+        <h2>⚠️ Error de la aplicación</h2>
+        <pre style={{ whiteSpace:"pre-wrap", fontSize:"12px", marginTop:"16px", color:"#fca5a5" }}>{String(this.state.error)}</pre>
+        <p style={{ color:"#9CA3AF", marginTop:"16px", fontSize:"12px" }}>Abre F12 → Console para más detalles</p>
+      </div>
+    );
+    return this.props.children;
+  }
+}
+ReactDOM.createRoot(document.getElementById("root")).render(<ErrorBoundary><App /></ErrorBoundary>);
+</script>
+</body>
+</html>
