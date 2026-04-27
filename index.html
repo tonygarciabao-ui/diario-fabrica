@@ -912,7 +912,8 @@ function App() {
       const val = fd.celdasInput || "";
       if (!val) return;
       const updated = { ...dayData, [fac.id]: { ...dayData[fac.id], celdas: [...celdas, { val, hora }], celdasInput: "" }};
-          };
+      await saveData(updated);
+    };
     return (
       <div style={C.row}>
         <FactoryPanel factory={fac}>
