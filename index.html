@@ -64,22 +64,32 @@ function weekOf(str) {
 }
 function monthOf(str) { return str.slice(0, 7); }
 
-// ── Firestore helpers ─────────────────────────────────────────────
+// ── localStorage helpers ─────────────────────────────────────────
+const LS_PREFIX = "diario_dia_";
 async function dbGet(date) {
   try {
-    const doc = await db.collection("dias").doc(date).get();
-    if (doc.exists) return doc.data();
+    const raw = localStorage.getItem(LS_PREFIX + date);
+    if (raw) return JSON.parse(raw);
     return { agrela: {}, moras: {} };
   } catch(e) { console.error(e); return { agrela: {}, moras: {} }; }
 }
 async function dbSet(date, data) {
   try {
-    await db.collection("dias").doc(date).set(data);
+    localStorage.setItem(LS_PREFIX + date, JSON.stringify(data));
   } catch(e) { console.error(e); }
 }
 async function dbList() {
   try {
-    return snap.docs.map(d => ({ date: d.id, data: d.data() }));
+    const result = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key && key.startsWith(LS_PREFIX)) {
+        const date = key.replace(LS_PREFIX, "");
+        const raw = localStorage.getItem(key);
+        if (raw) result.push({ date, data: JSON.parse(raw) });
+      }
+    }
+    return result.sort((a,b) => a.date.localeCompare(b.date));
   } catch(e) { console.error(e); return []; }
 }
 
