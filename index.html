@@ -224,6 +224,12 @@ function App() {
 
   useEffect(() => { loadData(); }, [loadData]);
 
+  const saveData = async (data) => {
+    setDayData(data);
+    await dbSet(selectedDate, data);
+  };
+
+
   useEffect(() => {
     if (activeSection === "historico") {
       setHistLoading(true);
