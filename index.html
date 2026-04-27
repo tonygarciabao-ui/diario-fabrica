@@ -166,7 +166,6 @@ function App() {
   const [histDays, setHistDays] = useState([]);
   const [showClientes, setShowClientes] = useState(true);
   const [showPlan, setShowPlan] = useState(true);
-  const [showCentrosClientes, setShowCentrosClientes] = useState(true);
   const [paleInputs, setPaleInputs] = useState({});
   const setPaleInput = (cod, field, val) => setPaleInputs(p => ({...p, [cod]:{...(p[cod]||{}), [field]:val}}));
   const [palesConfig, setPalesConfig] = useState({pckCj:"", unidPale:""});
@@ -189,7 +188,13 @@ function App() {
   const defaultDetalle = ["Mercancía justa","Sin stock","Bloqueado","En tránsito","Avería línea","Otros"];
   const [detalleOpciones, setDetalleOpcionesRaw] = useState(() => { try { const s = localStorage.getItem("diario_detalle"); return s ? JSON.parse(s) : defaultDetalle; } catch(e) { return defaultDetalle; } });
   const setDetalleOpciones = (v) => { const next = typeof v === "function" ? v(detalleOpciones) : v; setDetalleOpcionesRaw(next); try { localStorage.setItem("diario_detalle", JSON.stringify(next)); } catch(e) {} };
-  const [configEdit, setConfigEdit] = useState({ situ:"", grupo:"" });
+  const [configEdit, setConfigEdit] = useState({ situ:"", grupo:"", detalle:"" });
+  const [configTab, setConfigTab] = useState("general");
+  const [productos, setProductosRaw] = useState(() => { try { const s = localStorage.getItem("diario_productos"); return s ? JSON.parse(s) : []; } catch(e) { return []; } });
+  const setProductos = (v) => { const next = typeof v === "function" ? v(productos) : v; setProductosRaw(next); try { localStorage.setItem("diario_productos", JSON.stringify(next)); } catch(e) {} };
+  const [prodEdit, setProdEdit] = useState({ cod:"", desc:"", pck:"", uds:"" });
+  const [catalogoFecha, setCatalogoFechaRaw] = useState(() => { try { return localStorage.getItem("diario_catalogo_fecha") || ""; } catch(e) { return ""; } });
+  const setCatalogoFecha = (v) => { setCatalogoFechaRaw(v); try { localStorage.setItem("diario_catalogo_fecha", v); } catch(e) {} };
   const [histLoading, setHistLoading] = useState(false);
   const [histView, setHistView] = useState("list");
   const [searchQ, setSearchQ] = useState("");
@@ -991,7 +996,16 @@ function App() {
         const umb   = colUmb   >= 0 && row[colUmb]   ? String(row[colUmb]).trim() : "";
         if (cod && cod !== "material") stockMap[cod] = { libre, bloq, umb, desc };
       });
-      setPaleInputs({});
+      // Autocompletar PCK/CJ y Uds/Pale desde el catálogo de productos
+      const autoInputs = {};
+      try {
+        const cat = JSON.parse(localStorage.getItem("diario_productos") || "[]");
+        Object.keys(stockMap).forEach(cod => {
+          const prod = cat.find(p => p.cod === cod);
+          if (prod) autoInputs[cod] = { pckCj: prod.pck || "", uPale: prod.uds || "" };
+        });
+      } catch(e) {}
+      setPaleInputs(autoInputs);
       setCentrosData(prev => ({ ...prev, [centroKey]: stockMap }));
       setCentrosFecha(prev => ({ ...prev, [centroKey]: new Date().toLocaleTimeString("es-ES",{hour:"2-digit",minute:"2-digit"}) }));
       showSaved("✓ Centro " + {moras:"Moras",ar2:"Autoradio 2",ar1:"Autoradio 1"}[centroKey] + ": " + Object.keys(stockMap).length + " referencias");
@@ -1076,7 +1090,6 @@ function App() {
                       <th style={{ padding:"5px 8px", color, fontWeight:700, fontSize:"10px", textAlign:"center", whiteSpace:"nowrap" }}>Pales</th>
                     </React.Fragment>
                   ))}
-                  {showCentrosClientes && <th style={{ padding:"5px 8px", color:"#E5E7EB", fontWeight:700, fontSize:"12px", textAlign:"left", borderLeft:"2px solid #525260" }}>Clientes</th>}
                 </tr>
               </thead>
               <tbody>
@@ -1594,15 +1607,29 @@ function App() {
           </div>
         )}
       </div>
-      {/* Config Modal */}
+      {/* Config Modal - Pantalla completa */}
       {showConfig && (
-        <div onClick={e => { if(e.target===e.currentTarget) setShowConfig(false); }}
-          style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.75)", zIndex:100, display:"flex", alignItems:"center", justifyContent:"center" }}>
-          <div style={{ background:"#1A1A1F", border:"1px solid #44444F", borderRadius:"12px", padding:"24px", width:"480px", maxWidth:"95vw", maxHeight:"85vh", overflowY:"auto" }}>
-            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:"20px" }}>
-              <div style={{ fontSize:"16px", fontWeight:700, color:"#F3F4F6" }}>⚙️ Configuración</div>
-              <button onClick={() => setShowConfig(false)} style={{ background:"none", border:"none", color:"#9CA3AF", cursor:"pointer", fontSize:"20px", padding:0 }}>×</button>
+        <div style={{ position:"fixed", inset:0, background:"#111116", zIndex:100, display:"flex", flexDirection:"column", overflow:"hidden" }}>
+          {/* Header */}
+          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"16px 24px", borderBottom:"1px solid #1E1E2A", background:"#161620", flexShrink:0 }}>
+            <div style={{ display:"flex", alignItems:"center", gap:"12px" }}>
+              <span style={{ fontSize:"18px", fontWeight:800, color:"#F3F4F6" }}>⚙️ Configuración</span>
+              {/* Tabs */}
+              <div style={{ display:"flex", gap:"4px", marginLeft:"16px" }}>
+                {[["general","🎨 General"],["productos","📦 Productos"]].map(([id,lbl]) => (
+                  <button key={id} onClick={() => setConfigTab(id)}
+                    style={{ background: configTab===id ? "#27272A" : "none", border: configTab===id ? "1px solid #3F3F46" : "1px solid transparent", color: configTab===id ? "#F3F4F6" : "#9CA3AF", borderRadius:"6px", padding:"6px 14px", cursor:"pointer", fontSize:"13px", fontWeight: configTab===id ? 700 : 400, fontFamily:"inherit" }}>
+                    {lbl}
+                  </button>
+                ))}
+              </div>
             </div>
+            <button onClick={() => setShowConfig(false)} style={{ background:"#27272A", border:"1px solid #3F3F46", color:"#9CA3AF", cursor:"pointer", fontSize:"14px", padding:"6px 14px", borderRadius:"6px", fontFamily:"inherit" }}>✕ Cerrar</button>
+          </div>
+          {/* Body */}
+          <div style={{ flex:1, overflowY:"auto", padding:"24px" }}>
+          {configTab === "general" && (
+          <div style={{ maxWidth:"600px", margin:"0 auto", display:"flex", flexDirection:"column", gap:"32px" }}>
             <div style={{ marginBottom:"24px" }}>
               <div style={{ fontSize:"11px", fontWeight:700, color:"#F97316", textTransform:"uppercase", letterSpacing:"0.08em", marginBottom:"10px" }}>Estados de Situación</div>
               <div style={{ display:"flex", flexDirection:"column", gap:"6px", marginBottom:"10px" }}>
@@ -1689,6 +1716,120 @@ function App() {
                   style={{ background:"#8B5CF6", border:"none", color:"#fff", borderRadius:"6px", padding:"6px 12px", cursor:"pointer", fontWeight:700, fontSize:"12px", fontFamily:"inherit" }}>+ Añadir</button>
               </div>
             </div>
+          </div>
+          )}
+          {configTab === "productos" && (
+            <div style={{ maxWidth:"900px", margin:"0 auto" }}>
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:"16px" }}>
+                <div style={{ fontSize:"11px", fontWeight:700, color:"#10B981", textTransform:"uppercase", letterSpacing:"0.08em" }}>Catálogo de Productos</div>
+                <div style={{ display:"flex", alignItems:"center", gap:"12px" }}>
+                  {catalogoFecha && <span style={{ fontSize:"11px", color:"#9CA3AF" }}>Última actualización: <strong style={{ color:"#10B981" }}>{catalogoFecha}</strong></span>}
+                  <label style={{ background:"#10B981", border:"none", color:"#fff", borderRadius:"6px", padding:"7px 14px", cursor:"pointer", fontWeight:700, fontSize:"12px", fontFamily:"inherit", display:"inline-block" }}>
+                    📂 Cargar Excel
+                    <input type="file" accept=".xlsx,.xls" style={{ display:"none" }} onChange={e => {
+                      const file = e.target.files[0]; if (!file) return;
+                      const reader = new FileReader();
+                      reader.onload = ev => {
+                        try {
+                          const wb = XLSX.read(ev.target.result, { type:"array" });
+                          const ws = wb.Sheets[wb.SheetNames[0]];
+                          // Buscar la fila de cabeceras (puede estar en fila 1 o 2)
+                          let rows = XLSX.utils.sheet_to_json(ws, { defval:"" });
+                          if (rows.length > 0) {
+                            const firstKey = Object.keys(rows[0])[0] || "";
+                            // Si la primera fila no tiene cabeceras reconocibles, saltar
+                            if (!firstKey.match(/código|cod|desc|pck|uds/i)) {
+                              rows = XLSX.utils.sheet_to_json(ws, { defval:"", range:1 });
+                            }
+                          }
+                          const nuevos = rows.map(r => {
+                            const cod = String(r["Código"] || r["CÓDIGO"] || r["codigo"] || r["COD"] || r["Cod"] || "").trim().toUpperCase();
+                            const desc = String(r["Descripción"] || r["DESCRIPCIÓN"] || r["descripcion"] || r["DESC"] || "").trim();
+                            const pck = String(r["PCK/CJ"] || r["pck"] || r["PCK"] || "").trim();
+                            const uds = String(r["Uds/Pale"] || r["UDS/PALE"] || r["uds"] || r["UDS"] || "").trim();
+                            return { cod, desc, pck, uds };
+                          }).filter(r => r.cod);
+                          if (nuevos.length === 0) { alert("No se encontraron productos. Asegúrate de que el Excel tiene columnas: Código, Descripción, PCK/CJ, Uds/Pale"); return; }
+                          setProductos(nuevos);
+                          const fecha = new Date().toLocaleDateString("es-ES", { day:"2-digit", month:"2-digit", year:"numeric", hour:"2-digit", minute:"2-digit" });
+                          setCatalogoFecha(fecha);
+                          alert("✓ Catálogo actualizado: " + nuevos.length + " productos cargados");
+                        } catch(err) { alert("Error al leer el archivo: " + err.message); }
+                      };
+                      reader.readAsArrayBuffer(file);
+                      e.target.value = "";
+                    }} />
+                  </label>
+                </div>
+              </div>
+              {/* Formulario añadir */}
+              <div style={{ display:"grid", gridTemplateColumns:"1fr 2fr 100px 100px auto", gap:"8px", marginBottom:"16px", alignItems:"end" }}>
+                <div>
+                  <div style={{ fontSize:"10px", color:"#9CA3AF", marginBottom:"4px" }}>CÓDIGO</div>
+                  <input style={{ width:"100%", background:"#111113", border:"1px solid #3F3F46", borderRadius:"6px", color:"#F3F4F6", padding:"7px 10px", fontSize:"13px", outline:"none", fontFamily:"inherit" }}
+                    placeholder="0005" value={prodEdit.cod} onChange={e => setProdEdit(p=>({...p, cod:e.target.value.toUpperCase()}))} />
+                </div>
+                <div>
+                  <div style={{ fontSize:"10px", color:"#9CA3AF", marginBottom:"4px" }}>DESCRIPCIÓN</div>
+                  <input style={{ width:"100%", background:"#111113", border:"1px solid #3F3F46", borderRadius:"6px", color:"#F3F4F6", padding:"7px 10px", fontSize:"13px", outline:"none", fontFamily:"inherit" }}
+                    placeholder="EG 0.0 TOSTADA BARRIL 20L" value={prodEdit.desc} onChange={e => setProdEdit(p=>({...p, desc:e.target.value}))} />
+                </div>
+                <div>
+                  <div style={{ fontSize:"10px", color:"#9CA3AF", marginBottom:"4px" }}>PCK/CJ</div>
+                  <input style={{ width:"100%", background:"#111113", border:"1px solid #3F3F46", borderRadius:"6px", color:"#F3F4F6", padding:"7px 10px", fontSize:"13px", outline:"none", fontFamily:"inherit", textAlign:"center" }}
+                    placeholder="12" type="number" value={prodEdit.pck} onChange={e => setProdEdit(p=>({...p, pck:e.target.value}))} />
+                </div>
+                <div>
+                  <div style={{ fontSize:"10px", color:"#9CA3AF", marginBottom:"4px" }}>UDS/PALE</div>
+                  <input style={{ width:"100%", background:"#111113", border:"1px solid #3F3F46", borderRadius:"6px", color:"#F3F4F6", padding:"7px 10px", fontSize:"13px", outline:"none", fontFamily:"inherit", textAlign:"center" }}
+                    placeholder="48" type="number" value={prodEdit.uds} onChange={e => setProdEdit(p=>({...p, uds:e.target.value}))} />
+                </div>
+                <button onClick={() => {
+                  if (!prodEdit.cod.trim()) return;
+                  const existe = productos.findIndex(p => p.cod === prodEdit.cod.trim());
+                  if (existe >= 0) {
+                    setProductos(prev => prev.map((p,i) => i===existe ? {...prodEdit, cod:prodEdit.cod.trim()} : p));
+                  } else {
+                    setProductos(prev => [...prev, {...prodEdit, cod:prodEdit.cod.trim()}]);
+                  }
+                  setProdEdit({ cod:"", desc:"", pck:"", uds:"" });
+                }} style={{ background:"#10B981", border:"none", color:"#fff", borderRadius:"6px", padding:"7px 16px", cursor:"pointer", fontWeight:700, fontSize:"13px", fontFamily:"inherit", whiteSpace:"nowrap" }}>+ Añadir</button>
+              </div>
+              {/* Tabla productos */}
+              {productos.length === 0 ? (
+                <div style={{ color:"#9CA3AF", fontSize:"13px", textAlign:"center", padding:"40px", background:"#161620", borderRadius:"8px", border:"1px solid #1E1E2A" }}>
+                  No hay productos guardados. Añade el primero arriba.
+                </div>
+              ) : (
+                <div style={{ background:"#161620", borderRadius:"8px", border:"1px solid #1E1E2A", overflow:"hidden" }}>
+                  <div style={{ display:"grid", gridTemplateColumns:"100px 1fr 90px 90px 60px", gap:0, borderBottom:"2px solid #1E1E2A", padding:"8px 12px" }}>
+                    {["CÓDIGO","DESCRIPCIÓN","PCK/CJ","UDS/PALE",""].map(h => (
+                      <div key={h} style={{ fontSize:"10px", fontWeight:700, color:"#9CA3AF", letterSpacing:"0.06em" }}>{h}</div>
+                    ))}
+                  </div>
+                  {productos.sort((a,b)=>a.cod.localeCompare(b.cod)).map((p, idx) => (
+                    <div key={p.cod} style={{ display:"grid", gridTemplateColumns:"100px 1fr 90px 90px 60px", gap:0, padding:"8px 12px", borderBottom:"1px solid #1E1E2A", alignItems:"center",
+                      background: idx%2===0 ? "transparent" : "#13131A" }}>
+                      <div style={{ fontFamily:"'JetBrains Mono',monospace", fontSize:"13px", color:"#F59E0B", fontWeight:700 }}>{p.cod}</div>
+                      <div style={{ fontSize:"13px", color:"#F3F4F6" }}>{p.desc || <span style={{color:"#555"}}>—</span>}</div>
+                      <div style={{ fontSize:"13px", color:"#F3F4F6", textAlign:"center" }}>{p.pck || <span style={{color:"#555"}}>—</span>}</div>
+                      <div style={{ fontSize:"13px", color:"#F3F4F6", textAlign:"center" }}>{p.uds || <span style={{color:"#555"}}>—</span>}</div>
+                      <div style={{ display:"flex", gap:"4px", justifyContent:"flex-end" }}>
+                        <button onClick={() => setProdEdit({cod:p.cod, desc:p.desc||"", pck:p.pck||"", uds:p.uds||""})}
+                          style={{ background:"#27272A", border:"none", color:"#9CA3AF", borderRadius:"4px", padding:"3px 7px", cursor:"pointer", fontSize:"11px" }}>✏️</button>
+                        <button onClick={() => setProductos(prev => prev.filter((_,i)=>i!==idx))}
+                          style={{ background:"#3d0f0f", border:"none", color:"#fca5a5", borderRadius:"4px", padding:"3px 7px", cursor:"pointer", fontSize:"11px" }}>✕</button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <div style={{ marginTop:"12px", fontSize:"11px", color:"#9CA3AF", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+                <span>{productos.length} producto{productos.length!==1?"s":""} en el catálogo. Se autocompletarán PCK/CJ y Uds/Pale al cargar Excel en Centros Logísticos.</span>
+                <span style={{ color:"#555", fontSize:"10px" }}>Formato Excel: columnas Código · Descripción · PCK/CJ · Uds/Pale</span>
+              </div>
+            </div>
+          )}
           </div>
         </div>
       )}
