@@ -321,6 +321,7 @@ function App() {
   const setPaleInput = (cod, field, val) => setPaleInputs(p => ({...p, [cod]:{...(p[cod]||{}), [field]:val}}));
   const [palesConfig, setPalesConfig] = useState({pckCj:"", unidPale:""});
   const [showConfig, setShowConfig] = useState(false);
+  const [showHelp, setShowHelp] = useState(false);
   const [planData, setPlanData] = useState({ agrela:[], moras:[] });
   const [planFecha, setPlanFecha] = useState({ agrela:"", moras:"" });
   const [centrosData, setCentrosData] = useState({moras:null, ar2:null, ar1:null});
@@ -794,7 +795,7 @@ function App() {
     };
 
     // Sección colapsable con grid de columnas
-    const SeccionGrid = ({ secKey, lbl, items, color }) => {
+    const SeccionGrid = ({ secKey, lbl, items, color, itemsAyer=[] }) => {
       const sorted = sortByFecha(items);
       const isOpen = openSections[fac.id][secKey];
       return (
@@ -803,11 +804,24 @@ function App() {
             style={{ background:"#1E1E28", padding:"10px 16px", display:"flex", alignItems:"center", gap:"10px", cursor:"pointer", userSelect:"none", borderBottom: isOpen ? `1px solid ${color}22` : "none" }}>
             <span style={{ color:"#9CA3AF", fontSize:"11px" }}>{isOpen ? "▼" : "▶"}</span>
             <span style={{ color, fontWeight:800, fontSize:"13px", flex:1, letterSpacing:"0.05em" }}>{lbl}</span>
-            <span style={{ background:color+"22", color, border:`1px solid ${color}44`, borderRadius:"9999px", padding:"2px 12px", fontSize:"12px", fontWeight:800 }}>{items.length}</span>
+            <span style={{ background:color+"22", color, border:`1px solid ${color}44`, borderRadius:"9999px", padding:"2px 12px", fontSize:"12px", fontWeight:800 }}>{items.length + itemsAyer.length}</span>
           </div>
           {isOpen && (
             <div style={{ padding:"10px 12px" }}>
-              {sorted.length === 0
+              {/* Arrastrados día anterior primero */}
+              {itemsAyer.length > 0 && (
+                <div style={{ marginBottom:"10px" }}>
+                  <div style={{ display:"flex", alignItems:"center", gap:"8px", marginBottom:"6px", padding:"4px 8px", background:"#1c1505", border:"1px solid #F59E0B44", borderRadius:"6px" }}>
+                    <span style={{ fontSize:"11px", color:"#F59E0B", fontWeight:800, letterSpacing:"0.06em" }}>📅 ARRASTRADOS DÍA ANTERIOR</span>
+                    <span style={{ background:"#F59E0B22", color:"#F59E0B", border:"1px solid #F59E0B44", borderRadius:"9999px", padding:"1px 8px", fontSize:"11px", fontWeight:700 }}>{itemsAyer.length}</span>
+                  </div>
+                  <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(180px, 1fr))", gap:"8px" }}>
+                    {itemsAyer.map(c => <CamionCard key={"ayer_"+c.nTransp} c={c} color={color} />)}
+                  </div>
+                  {sorted.length > 0 && <div style={{ borderBottom:"1px dashed #2A2A35", margin:"10px 0" }}/>}
+                </div>
+              )}
+              {sorted.length === 0 && itemsAyer.length === 0
                 ? <div style={{ color:"#606070", fontSize:"11px", fontStyle:"italic", padding:"8px" }}>Sin camiones</div>
                 : (() => {
                     // Agrupar por fecha
@@ -899,7 +913,7 @@ function App() {
           {/* KPIs inline */}
           {[
             { lbl:"TOTALES",     val: cd ? cd.total : "—",          color: fac.color },
-            { lbl:"ARRASTRADOS", val: cargasAyer[fac.id] ? cargasAyer[fac.id].length : (fd.arrastrados||"—"), color:"#EF4444" },
+            { lbl:"ARRASTRADOS", val: cargasAyer[fac.id]?.length || "—", color:"#EF4444" },
             { lbl:"PENDIENTES",  val: cd ? cd.pendientes : "—",      color:"#EF4444" },
             { lbl:"NOCTURNAS",   val: fd.transporteMeta?.nocturnas||"—", color:"#8B5CF6", manual:true },
           ].map(({lbl,val,color,manual}) => (
@@ -918,29 +932,21 @@ function App() {
 
         {/* Secciones con grid */}
         {cd && (<>
-          <SeccionGrid secKey="pendientes"  lbl="⏳ Pendientes"               items={cd.pendientes_list}          color="#F59E0B" />
-          <SeccionGrid secKey="registrados" lbl="🕐 Registrados"              items={cd.registrados}              color="#38BDF8" />
-          <SeccionGrid secKey="enCarga"     lbl="🔄 En carga"                 items={cd.enCarga}                  color="#22C55E" />
-          <SeccionGrid secKey="finCarga"    lbl="✅ Carga finalizada"         items={cd.finCarga}                  color="#EF4444" />
-          <SeccionGrid secKey="arrastrados" lbl="⬅️ Arrastrados día anterior" items={fd.arrastradosLista||[]}     color="#F59E0B" />
-          {/* Secciones día anterior */}
-          {cargasAyer[fac.id] && cargasAyer[fac.id].length > 0 && (() => {
-            const ayer = cargasAyer[fac.id];
+          {(() => {
+            const ayer = cargasAyer[fac.id] || [];
             const hasSystoreA = ayer.some(c => c.systore !== null);
             const isEnCargaA    = (c) => hasSystoreA ? (c.systore === 3 && [2,3].includes(c.status)) : c.status === 3;
             const isRegistradoA = (c) => hasSystoreA ? (c.status === 2 && [1,2].includes(c.systore)) : c.status === 2;
             const isPendienteA  = (c) => hasSystoreA ? (c.status === 1 && [1,2].includes(c.systore)) : c.status === 1;
+            const ayerPendientes  = ayer.filter(c => isPendienteA(c));
             const ayerRegistrados = ayer.filter(c => isRegistradoA(c));
-            const ayerEnCarga = ayer.filter(c => isEnCargaA(c));
-            const ayerPendientes = ayer.filter(c => isPendienteA(c));
-            return (
-              <div style={{ marginTop:"8px", borderTop:"2px dashed #3F3F46", paddingTop:"8px" }}>
-                <div style={{ fontSize:"11px", color:"#9CA3AF", fontWeight:700, marginBottom:"8px", letterSpacing:"0.06em" }}>📅 PENDIENTES DEL DÍA ANTERIOR</div>
-                {ayerPendientes.length > 0 && <SeccionGrid secKey="ayerPendientes" lbl="⏳ Pendientes (ayer)" items={ayerPendientes} color="#F59E0B" />}
-                {ayerRegistrados.length > 0 && <SeccionGrid secKey="ayerRegistrados" lbl="🕐 Registrados (ayer)" items={ayerRegistrados} color="#38BDF8" />}
-                {ayerEnCarga.length > 0 && <SeccionGrid secKey="ayerEnCarga" lbl="🔄 En carga (ayer)" items={ayerEnCarga} color="#22C55E" />}
-              </div>
-            );
+            const ayerEnCarga     = ayer.filter(c => isEnCargaA(c));
+            return <>
+              <SeccionGrid secKey="pendientes"  lbl="⏳ Pendientes"       items={cd.pendientes_list} color="#F59E0B" itemsAyer={ayerPendientes} />
+              <SeccionGrid secKey="registrados" lbl="🕐 Registrados"      items={cd.registrados}     color="#38BDF8" itemsAyer={ayerRegistrados} />
+              <SeccionGrid secKey="enCarga"     lbl="🔄 En carga"         items={cd.enCarga}         color="#22C55E" itemsAyer={ayerEnCarga} />
+              <SeccionGrid secKey="finCarga"    lbl="✅ Carga finalizada" items={cd.finCarga}        color="#EF4444" />
+            </>;
           })()}
         </>)}
 
@@ -2990,6 +2996,7 @@ function App() {
           </div>
           {savedMsg && <div style={{ fontSize:"11px", color:"#A3E635", transition:"color 0.3s" }}>{savedMsg}</div>}
           <div title={fbReady ? "Conectado a Firebase" : "Sin conexión Firebase"} style={{ width:8, height:8, borderRadius:"50%", background: fbReady ? "#22C55E" : "#6B7280", flexShrink:0 }}/>
+          <button onClick={() => setShowHelp(true)} style={{ background:"#2D2D3A", border:"none", color:"#D1D5DB", borderRadius:"8px", padding:"6px 12px", cursor:"pointer", fontSize:"18px" }} title="Ayuda">❓</button>
           <button onClick={() => setShowConfig(true)} style={{ background:"#2D2D3A", border:"none", color:"#D1D5DB", borderRadius:"8px", padding:"6px 12px", cursor:"pointer", fontSize:"18px" }} title="Configuración">⚙️</button>
         </div>
       </div>
@@ -3036,6 +3043,36 @@ function App() {
         )}
       </div>
       {/* Config Modal - Pantalla completa */}
+      {/* Panel de Ayuda */}
+      {showHelp && (
+        <div onClick={() => setShowHelp(false)} style={{ position:"fixed", inset:0, background:"#000000CC", zIndex:2000, display:"flex", alignItems:"center", justifyContent:"center", padding:"20px" }}>
+          <div onClick={e => e.stopPropagation()} style={{ background:"#16161C", border:"1px solid #2A2A35", borderRadius:"12px", width:"100%", maxWidth:"900px", boxShadow:"0 24px 64px #000", overflow:"hidden" }}>
+            <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"16px 20px", borderBottom:"1px solid #2A2A35" }}>
+              <div style={{ display:"flex", alignItems:"center", gap:"10px" }}>
+                <span style={{ fontSize:"20px" }}>❓</span>
+                <span style={{ fontWeight:700, fontSize:"15px", color:"#F3F4F6" }}>Ayuda — Diario Fábrica</span>
+              </div>
+              <button onClick={() => setShowHelp(false)} style={{ background:"#27272A", border:"1px solid #3F3F46", color:"#9CA3AF", cursor:"pointer", fontSize:"14px", padding:"6px 14px", borderRadius:"6px", fontFamily:"inherit" }}>✕ Cerrar</button>
+            </div>
+            <div style={{ padding:"20px", display:"flex", flexDirection:"column", gap:"20px" }}>
+              <div>
+                <div style={{ fontSize:"13px", color:"#F59E0B", fontWeight:700, marginBottom:"10px" }}>🚛 Cómo usar la pestaña CARGAS</div>
+                <div style={{ position:"relative", paddingBottom:"56.25%", height:0, borderRadius:"8px", overflow:"hidden", background:"#111116" }}>
+                  <iframe src="https://www.youtube-nocookie.com/embed/98_Hzcda3AE?rel=0"
+                    style={{ position:"absolute", top:0, left:0, width:"100%", height:"100%", border:"none" }}
+                    allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                    allowFullScreen />
+                </div>
+                <div style={{ marginTop:"8px", textAlign:"right" }}>
+                  <a href="https://youtu.be/98_Hzcda3AE" target="_blank" rel="noopener noreferrer"
+                    style={{ color:"#38BDF8", fontSize:"11px", textDecoration:"none" }}>▶ Abrir en YouTube →</a>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {showConfig && (
         <div style={{ position:"fixed", inset:0, background:"#111116", zIndex:100, display:"flex", flexDirection:"column", overflow:"hidden" }}>
           {/* Header */}
