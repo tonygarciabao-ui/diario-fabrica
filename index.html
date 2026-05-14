@@ -288,7 +288,8 @@ function App() {
   };
   const [cargasAyer, setCargasAyer] = useState({agrela:null, moras:null});
   const [cargasAyerFecha, setCargasAyerFecha] = useState({agrela:"", moras:""});
-  const [pasilloFiltro, setPasilloFiltro] = useState("todos"); // "todos" | "criticos" | "rompen" | "nuevos"
+  const [pasilloFiltro, setPasilloFiltro] = useState("todos");
+  const [busqTransp, setBusqTransp] = useState(""); // "todos" | "criticos" | "rompen" | "nuevos"
 
   const parseCargasAyerXlsx = (arrayBuffer, fid) => {
     try {
@@ -626,6 +627,7 @@ function App() {
       const iPeso      = header.findIndex(h => h.includes("Peso total transportado"));
       const iTractora  = header.findIndex(h => /tracto/i.test(h) && /matr/i.test(h));
       const iRemolque  = header.findIndex(h => /remolque/i.test(h) && /matr/i.test(h));
+      const iOptima    = header.findIndex(h => /optim/i.test(h) && /carga/i.test(h));
       const iTextos    = header.findIndex(h => h.includes("Textos CSV"));
       const iSystore   = header.findIndex(h => h.includes("Systore") && h.includes("Status"));
       const seenTransp = new Set();
@@ -675,6 +677,7 @@ function App() {
           poblacion: iPoblacion >= 0 && row[iPoblacion] ? String(row[iPoblacion]).trim() : "",
           tractora:  iTractora >= 0 && row[iTractora] ? String(row[iTractora]).trim() : "",
           remolque:  iRemolque >= 0 && row[iRemolque] ? String(row[iRemolque]).trim() : "",
+          optimizada: iOptima >= 0 ? String(row[iOptima]||"").trim().toUpperCase() === "X" : null,
           fechaCarga: (() => {
             if (iFechaCarga < 0 || !row[iFechaCarga]) return "";
             const v = row[iFechaCarga];
@@ -776,7 +779,16 @@ function App() {
                 {tieneSPV && <span title="Lleva SPV" style={{ display:"inline-flex", alignItems:"center", justifyContent:"center", width:"22px", height:"22px", borderRadius:"4px", background:"#F59E0B", color:"#111116", fontSize:"9px", fontWeight:900, letterSpacing:"0.02em", lineHeight:1, flexShrink:0 }}>SPV</span>}
               </>;
             })()}
-            {isPesoExcedido(c, fac.id) && <span title="Peso excedido" style={{ fontSize:"18px", lineHeight:1 }}>⚖️</span>}
+            {c.optimizada === false && (
+              <svg width="20" height="20" viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg" title="Carga no optimizada">
+                <circle cx="20" cy="20" r="20" fill="#ef4444"/>
+                <line x1="20" y1="7" x2="20" y2="28" stroke="#fbbf24" stroke-width="3.5" stroke-linecap="round"/>
+                <line x1="8" y1="16" x2="32" y2="16" stroke="#fbbf24" stroke-width="3.5" stroke-linecap="round"/>
+                <path d="M5,19 Q8,28 11,19" stroke="#fbbf24" stroke-width="3" fill="none" stroke-linecap="round"/>
+                <path d="M29,19 Q32,28 35,19" stroke="#fbbf24" stroke-width="3" fill="none" stroke-linecap="round"/>
+                <line x1="15" y1="28" x2="25" y2="28" stroke="#fbbf24" stroke-width="3.5" stroke-linecap="round"/>
+              </svg>
+            )}
             {incids.map((inc,i) => { const info = INCIDENCIAS.find(x => x.id===inc.tipo); return info ? <span key={i} style={{ fontSize:"18px", lineHeight:1 }} title={info.label}>{info.icon}</span> : null; })}
             {alerta && <span style={{ fontSize:"22px", lineHeight:1, opacity:0.9 }}>🚨</span>}
           </div>
@@ -1828,6 +1840,123 @@ function App() {
             </table>
           </div>
         )}
+
+      {/* ── Disponibilidad de transportes en centros ── */}
+      {(() => {
+        const pm = dayData[activeFab]?.pedidosMap || {};
+        const criticosCods = (dayData[activeFab]?.sapCriticos || []).map(r => r.cod);
+        const centrosLoaded = Object.values(centrosData).some(v => v !== null);
+        if (!centrosLoaded || !Object.keys(pm).length) return null;
+
+        // Agrupar pedidos por transporte
+        const transpMap = {};
+        Object.entries(pm).forEach(([cod, peds]) => {
+          peds.forEach(p => {
+            const nt = String(p.transporte||"").trim();
+            if (!nt) return;
+            if (!transpMap[nt]) transpMap[nt] = { nTransp: nt, cliente: p.cliente||"", formatos: {} };
+            transpMap[nt].formatos[cod] = (transpMap[nt].formatos[cod]||0) + (Number(p.qty)||0);
+          });
+        });
+
+        // Solo transportes con al menos un formato crítico (o todos si no hay críticos)
+        const transpCriticos = Object.values(transpMap).filter(t =>
+          criticosCods.length === 0 || Object.keys(t.formatos).some(cod => criticosCods.includes(cod))
+        ).sort((a,b) => a.nTransp.localeCompare(b.nTransp));
+
+        if (!transpCriticos.length) return null;
+
+        const centros3 = [
+          { key:"moras", label:"Moras",       color:"#38BDF8" },
+          { key:"ar1",   label:"Autoradio 1", color:"#A78BFA" },
+          { key:"ar2",   label:"Autoradio 2", color:"#34D399" },
+        ];
+
+        const puedeServir = (centroKey, formatos) =>
+          Object.entries(formatos).every(([cod, palesNec]) => {
+            const stock = centrosData[centroKey]?.[cod];
+            if (!stock) return false;
+            const uPale = Number(paleInputs[cod]?.uPale) || null;
+            return uPale ? Math.floor(stock.libre / uPale) >= palesNec : stock.libre > 0;
+          });
+
+        const faltantes = (centroKey, formatos) =>
+          Object.entries(formatos)
+            .filter(([cod, palesNec]) => {
+              const stock = centrosData[centroKey]?.[cod];
+              if (!stock) return true;
+              const uPale = Number(paleInputs[cod]?.uPale) || null;
+              return uPale ? Math.floor(stock.libre / uPale) < palesNec : stock.libre <= 0;
+            })
+            .map(([cod]) => cod);
+
+        return (
+          <div style={{ background:"#16161C", border:"1px solid #2A2A35", borderRadius:"10px", marginTop:"16px", overflow:"hidden" }}>
+            <div style={{ background:"#1E1E28", padding:"12px 16px", borderBottom:"1px solid #2A2A35" }}>
+              <div style={{ fontWeight:700, color:"#F3F4F6", fontSize:"14px" }}>🚛 Disponibilidad de transportes en centros</div>
+              <div style={{ color:"#9CA3AF", fontSize:"11px", marginTop:"2px" }}>Transportes con formatos críticos — ✅ puede servirse completo desde ese centro · ❌ faltan formatos</div>
+              <div style={{ marginTop:"10px", display:"flex", gap:"8px", alignItems:"center" }}>
+                <input
+                  type="text"
+                  placeholder="Buscar nº transporte..."
+                  value={busqTransp}
+                  onChange={e => setBusqTransp(e.target.value)}
+                  style={{ background:"#111116", border:"1px solid #3F3F46", borderRadius:"6px", color:"#F3F4F6", padding:"6px 12px", fontSize:"12px", outline:"none", fontFamily:"inherit", width:"200px" }}
+                />
+                {busqTransp && <button onClick={() => setBusqTransp("")} style={{ background:"none", border:"none", color:"#9CA3AF", cursor:"pointer", fontSize:"12px", fontFamily:"inherit" }}>✕ Limpiar</button>}
+              </div>
+            </div>
+            <div style={{ overflowX:"auto" }}>
+              <table style={{ width:"100%", borderCollapse:"collapse", minWidth:"600px" }}>
+                <thead>
+                  <tr style={{ background:"#111118" }}>
+                    <th style={{ padding:"8px 12px", textAlign:"left",  color:"#9CA3AF", fontSize:"11px", fontWeight:700, borderBottom:"2px solid #2A2A35" }}>Transporte</th>
+                    <th style={{ padding:"8px 12px", textAlign:"left",  color:"#9CA3AF", fontSize:"11px", fontWeight:700, borderBottom:"2px solid #2A2A35" }}>Cliente</th>
+                    <th style={{ padding:"8px 12px", textAlign:"center",color:"#9CA3AF", fontSize:"11px", fontWeight:700, borderBottom:"2px solid #2A2A35" }}>Formatos críticos</th>
+                    {centros3.map(({key,label,color}) => (
+                      <th key={key} style={{ padding:"8px 12px", textAlign:"center", color, fontSize:"11px", fontWeight:700, borderBottom:"2px solid #2A2A35", width:"110px" }}>{label}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {transpCriticos.filter(t =>
+                    !busqTransp || t.nTransp.includes(busqTransp.trim()) || t.cliente.toUpperCase().includes(busqTransp.toUpperCase().trim())
+                  ).map((t, idx) => {
+                    const formatosCriticos = Object.keys(t.formatos).filter(cod => criticosCods.includes(cod));
+                    return (
+                      <tr key={t.nTransp} style={{ background: idx%2===0 ? "#16161C" : "#1A1A24", borderBottom:"1px solid #1E1E2A" }}>
+                        <td style={{ padding:"4px 8px", color:"#D946EF", fontWeight:700, fontSize:"11px", fontFamily:"'DM Mono',monospace" }}>{t.nTransp}</td>
+                        <td style={{ padding:"4px 8px", color:"#E5E7EB", fontSize:"11px", maxWidth:"200px", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{t.cliente}</td>
+                        <td style={{ padding:"4px 8px", textAlign:"center" }}>
+                          <div style={{ display:"flex", gap:"3px", flexWrap:"wrap", justifyContent:"center" }}>
+                            {formatosCriticos.map(cod => (
+                              <span key={cod} style={{ background:"#7f1d1d22", border:"1px solid #ef444444", borderRadius:"4px", padding:"1px 5px", fontSize:"10px", color:"#fca5a5", fontFamily:"'DM Mono',monospace" }}>{cod}</span>
+                            ))}
+                          </div>
+                        </td>
+                        {centros3.map(({key}) => {
+                          const puede = puedeServir(key, t.formatos);
+                          const falt  = puede ? [] : faltantes(key, t.formatos);
+                          return (
+                            <td key={key} style={{ padding:"4px 8px", textAlign:"center" }}>
+                              {!centrosData[key]
+                                ? <span style={{ color:"#3F3F46", fontSize:"11px" }}>—</span>
+                                : <span style={{ fontSize:"16px" }} title={puede ? "Puede servirse completo" : `Faltan: ${falt.join(", ")}`}>
+                                    {puede ? "✅" : "❌"}
+                                  </span>
+                              }
+                            </td>
+                          );
+                        })}
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        );
+      })()}
       </div>
     );
   };
@@ -2589,6 +2718,20 @@ function App() {
               </div>
             );
           })()}
+          {/* No optimizado */}
+          {c.optimizada === false && (
+            <div style={{ padding:"8px 20px", borderBottom:"1px solid #2A2A35", background:"#1a0a0a", display:"flex", alignItems:"center", gap:"10px" }}>
+              <svg width="18" height="18" viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg">
+                <circle cx="20" cy="20" r="20" fill="#ef4444"/>
+                <line x1="20" y1="7" x2="20" y2="28" stroke="#fbbf24" stroke-width="3.5" stroke-linecap="round"/>
+                <line x1="8" y1="16" x2="32" y2="16" stroke="#fbbf24" stroke-width="3.5" stroke-linecap="round"/>
+                <path d="M5,19 Q8,28 11,19" stroke="#fbbf24" stroke-width="3" fill="none" stroke-linecap="round"/>
+                <path d="M29,19 Q32,28 35,19" stroke="#fbbf24" stroke-width="3" fill="none" stroke-linecap="round"/>
+                <line x1="15" y1="28" x2="25" y2="28" stroke="#fbbf24" stroke-width="3.5" stroke-linecap="round"/>
+              </svg>
+              <span style={{ color:"#fca5a5", fontWeight:700, fontSize:"12px" }}>Carga no optimizada</span>
+            </div>
+          )}
           {/* PLV/SPV */}
           {tienePlvSpv(c) && (
             <div style={{ padding:"8px 20px", borderBottom:"1px solid #2A2A35", background:"#1a1500", display:"flex", alignItems:"center", gap:"10px" }}>
