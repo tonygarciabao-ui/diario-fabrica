@@ -67,7 +67,7 @@ const SECTIONS = [
   { id: "almacen",       label: "Almacén Auto.", icon: "🏭", color: "#EF4444" },
   { id: "stocks_agrela",  label: "Stocks Grela",  icon: "📦", color: "#D946EF" },
   { id: "stocks_moras",   label: "Stocks Moras",   icon: "📦", color: "#38BDF8" },
-  { id: "alertas",        label: "Alertas",         icon: "🚨", color: "#EF4444" },
+
 ];
 
 const ENTRY_SECTIONS = ["almacen","transporte","stocks"];
@@ -299,7 +299,7 @@ function App() {
   };
   const [palesReales, setPalesReales] = useState({}); // { fid_cod_nTransp: valor }
   const [alertaExpandidos, setAlertaExpandidos] = useState({});
-  const [alertaPopup, setAlertaPopup] = useState(null); // { t, fid }
+
   const [agenciasPrioritarias, setAgenciasPrioritarias] = useState(() => {
     try { const s = localStorage.getItem("diario_agencias_prio"); return s ? JSON.parse(s) : []; } catch(e) { return []; }
   });
@@ -2341,151 +2341,6 @@ function App() {
     );
   };
 
-    if (appError) return <div style={{color:"#EF4444",padding:"20px",fontFamily:"monospace",whiteSpace:"pre-wrap"}}>{String(appError)}</div>;
-
-  // ── renderAlertas ─────────────────────────────────────────────────
-  const renderAlertas = () => {
-    const fac = activeFab;
-    const criticos = sortCriticos(dayData[fac]?.sapCriticos || []);
-    const pedidos  = dayData[fac]?.pedidosMap || {};
-    const cargas   = cargasData[fac]?.todos || [];
-
-    // Construir mapa de transporte → estado desde cargas
-    const transpStatus = {};
-    cargas.forEach(c => {
-      if (!transpStatus[c.nTransp]) transpStatus[c.nTransp] = { status: c.status, cliente: c.cliente, transport: c.transport, inicio: c.inicio, fin: c.fin, fechaEnt: c.fechaEnt };
-    });
-
-    // Para cada formato crítico, recopilar los transportes afectados
-    const transpAlertas = {};
-    criticos.forEach(({ cod, diff }) => {
-      const peds = pedidos[cod] || [];
-      peds.forEach(p => {
-        const nt = String(p.transporte || "").trim();
-        if (!nt) return;
-        if (!transpAlertas[nt]) {
-          const st = transpStatus[nt] || {};
-          transpAlertas[nt] = { nTransp: nt, status: st.status || 1, cliente: p.cliente || st.cliente || "", transport: st.transport || "", inicio: st.inicio || "", fin: st.fin || "", fechaEnt: st.fechaEnt || "", formatos: [] };
-        }
-        const yaEsta = transpAlertas[nt].formatos.find(f => f.cod === cod);
-        if (!yaEsta) {
-          transpAlertas[nt].formatos.push({ cod, diff, fac, qty: Number(p.qty)||0, fecha: p.fecha, hora: p.hora });
-        } else {
-          yaEsta.qty = (yaEsta.qty||0) + (Number(p.qty)||0);
-        }
-      });
-    });
-
-    const lista = Object.values(transpAlertas).sort((a,b) => a.status - b.status || (a.inicio||"").localeCompare(b.inicio||""));
-
-    const STATUS_CFG = {
-      1: { label:"Pendiente",       color:"#F59E0B", bg:"#1c1200", border:"#92400e", dot:"#F59E0B" },
-      2: { label:"Registrado",      color:"#38BDF8", bg:"#0a1520", border:"#0369a1", dot:"#38BDF8" },
-      3: { label:"En carga",        color:"#22C55E", bg:"#052e16", border:"#15803d", dot:"#22C55E" },
-      4: { label:"Carga finalizada",color:"#EF4444", bg:"#1a0808", border:"#7f1d1d", dot:"#EF4444" },
-    };
-
-    const grupos = [1,2,3].map(s => ({ s, cfg: STATUS_CFG[s]||STATUS_CFG[1], items: lista.filter(t => {
-      return (t.status||1) === s;
-    })})).filter(g => g.items.length > 0);
-
-    return (
-      <div style={{ padding:"0 4px" }}>
-        {/* Header */}
-        <div style={{ display:"flex", alignItems:"center", gap:"16px", marginBottom:"16px", padding:"10px 0", borderBottom:"1px solid #1E1E2A", position:"sticky", top:0, zIndex:10, background:"#111116" }}>
-          <div style={{ fontSize:"15px", fontWeight:800, color:"#EF4444" }}>🚨 Alertas de Transporte</div>
-          <div style={{ fontSize:"12px", color:"#9CA3AF" }}>Camiones con formatos en rotura de stock</div>
-          {lista.length === 0 && <div style={{ fontSize:"12px", color:"#4ade80", background:"#052e16", border:"1px solid #15803d", borderRadius:"6px", padding:"4px 12px" }}>✓ Sin alertas activas</div>}
-          <div style={{ marginLeft:"auto", display:"flex", gap:"8px" }}>
-            {[1,2,3,4].map(s => {
-              const cfg = STATUS_CFG[s];
-              const cnt = lista.filter(t => s===4 ? (t.status||1)>=4 : (t.status||1)===s).length;
-              if (!cnt) return null;
-              return <span key={s} style={{ background:cfg.bg, border:`1px solid ${cfg.border}`, borderRadius:"4px", padding:"2px 10px", color:cfg.color, fontSize:"11px", fontWeight:700 }}>
-                <span style={{ display:"inline-block", width:7, height:7, borderRadius:"50%", background:cfg.dot, marginRight:5 }}/>
-                {cfg.label}: {cnt}
-              </span>;
-            })}
-          </div>
-        </div>
-
-        {/* Grupos por estado con tarjetas */}
-        {grupos.map(({ s, cfg, items }) => {
-          const isOpen = alertaExpandidos[s] !== false;
-          // Ordenar por fecha y agrupar
-          const sorted = [...items].sort((a,b) => {
-            const pa = a.fechaEnt ? a.fechaEnt.split("/").reverse().join("") : "99999999";
-            const pb = b.fechaEnt ? b.fechaEnt.split("/").reverse().join("") : "99999999";
-            return pa.localeCompare(pb);
-          });
-          const hoy = new Date(); hoy.setHours(0,0,0,0);
-          const getFechaColor = (fechaStr) => {
-            if (!fechaStr || fechaStr==="Sin fecha") return "#52525B";
-            const [d,m,y] = fechaStr.split("/");
-            const fecha = new Date(`20${y}-${m}-${d}`);
-            const diff = Math.round((fecha-hoy)/86400000);
-            if (diff<0) return "#ef4444"; if (diff===0) return "#4ade80"; if (diff===1) return "#38BDF8"; return "#fb923c";
-          };
-          const grupos2 = {};
-          sorted.forEach(t => { const k = t.fechaEnt||"Sin fecha"; if(!grupos2[k]) grupos2[k]=[]; grupos2[k].push(t); });
-
-          return (
-            <div key={s} style={{ background:"#1A1A1F", border:`1px solid ${cfg.color}33`, borderRadius:"10px", overflow:"hidden", marginBottom:"12px" }}>
-              <div onClick={() => setAlertaExpandidos(p => ({...p, [s]: p[s]===false ? true : false}))}
-                style={{ background:"#1E1E28", padding:"10px 16px", display:"flex", alignItems:"center", gap:"10px", cursor:"pointer", userSelect:"none", borderBottom: isOpen ? `1px solid ${cfg.color}22` : "none" }}>
-                <span style={{ color:"#9CA3AF", fontSize:"11px" }}>{isOpen ? "▼" : "▶"}</span>
-                <span style={{ color:cfg.color, fontWeight:800, fontSize:"13px", flex:1, letterSpacing:"0.05em" }}>{cfg.label}</span>
-                <span style={{ background:cfg.color+"22", color:cfg.color, border:`1px solid ${cfg.color}44`, borderRadius:"9999px", padding:"2px 12px", fontSize:"12px", fontWeight:800 }}>{items.length}</span>
-              </div>
-              {isOpen && (
-                <div style={{ padding:"10px 12px" }}>
-                  {Object.entries(grupos2).map(([fecha, titems]) => {
-                    const fc = getFechaColor(fecha);
-                    return (
-                      <div key={fecha} style={{ marginBottom:"10px" }}>
-                        <div style={{ display:"flex", alignItems:"center", gap:"8px", marginBottom:"6px" }}>
-                          <span style={{ color:"#FFFFFF", fontWeight:800, fontSize:"13px" }}><span style={{ fontSize:"15px" }}>📅</span> {fecha}</span>
-                          
-                          <span style={{ color:"#FFFFFF", fontSize:"12px", fontWeight:700, background:fc+"15", border:`1px solid ${fc}44`, borderRadius:"9999px", padding:"1px 8px" }}>{titems.length}</span>
-                        </div>
-                        <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(220px, 1fr))", gap:"6px" }}>
-                          {titems.map((t,ti) => {
-                            const s2 = getFechaColor(t.fechaEnt);
-                            const bg2 = (() => { if(!t.fechaEnt) return "#14141A"; const [d,m,y]=t.fechaEnt.split("/"); const f2=new Date(`20${y}-${m}-${d}`); const d2=Math.round((f2-hoy)/86400000); if(d2<0) return "#1a0808"; if(d2===0) return "#0a1f10"; if(d2===1) return "#0a1520"; return "#1c1305"; })();
-                            return (
-                              <div key={ti} onClick={() => setAlertaPopup({ t, fid: fac })}
-                                style={{ background:"#14141A", border:`1px solid ${cfg.color}44`, borderLeft:`3px solid ${cfg.color}`, borderRadius:"6px", padding:"8px 10px", display:"flex", flexDirection:"column", gap:"3px", cursor:"pointer", transition:"filter 0.15s" }}
-                                onMouseEnter={e => e.currentTarget.style.filter="brightness(1.3)"}
-                                onMouseLeave={e => e.currentTarget.style.filter="brightness(1)"}>
-                                <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
-                                  <span style={{ color:s2, fontWeight:800, fontSize:"12px", fontFamily:"'DM Mono',monospace" }}>{t.nTransp}</span>
-                                  {t.fechaEnt && <span style={{ fontSize:"10px", fontWeight:700, color:s2, background:s2+"22", borderRadius:"4px", padding:"1px 6px" }}>📅 {t.fechaEnt}</span>}
-                                </div>
-                                <div style={{ color:"#F3F4F6", fontWeight:600, fontSize:"11px", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{t.cliente}</div>
-                                <div style={{ color:"#E5E7EB", fontSize:"10px" }}>{t.transport}</div>
-                                <div style={{ display:"flex", gap:"4px", flexWrap:"wrap", marginTop:"2px" }}>
-                                  {t.formatos.map(f => (
-                                    <span key={f.cod} style={{ background:"#1a0808", border:"1px solid #7f1d1d", borderRadius:"4px", padding:"1px 6px", fontSize:"10px", fontWeight:700, color:"#fca5a5" }}>
-                                      🚨 {f.cod}{f.qty ? ` · ${Math.round(f.qty*100)/100} pal.` : ""}
-                                    </span>
-                                  ))}
-                                </div>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-          );
-        })}
-      </div>
-    );
-  };
-
   // ── Firebase sync ─────────────────────────────────────────────────
   const todayKey = todayStr();
   const [fbReady, setFbReady] = useState(false);
@@ -2576,7 +2431,12 @@ function App() {
       const esCritico = criticos.includes(cod);
       formatosDelTransp.push({ cod, totalQty, palesQty, stock, esCritico, clientes: pedCamion });
     });
-    formatosDelTransp.sort((a,b) => (b.esCritico?1:0) - (a.esCritico?1:0));
+    formatosDelTransp.sort((a,b) => {
+      const aLetra = /^[A-Za-z]/.test(a.cod);
+      const bLetra = /^[A-Za-z]/.test(b.cod);
+      if (aLetra !== bLetra) return aLetra ? 1 : -1;
+      return a.cod.localeCompare(b.cod, undefined, { numeric: true });
+    });
     const soloRotura = formatosDelTransp.filter(f => f.esCritico);
     const colNum = (() => {
       if (!c.fechaEnt) return "#9CA3AF";
@@ -2738,37 +2598,58 @@ function App() {
             </div>
           )}
           {/* Body */}
-          <div style={{ overflowY:"auto", padding:"16px 20px", flex:1 }}>
-            {soloRotura.length === 0
-              ? <div style={{ color:"#4ade80", textAlign:"center", padding:"40px", fontSize:"13px" }}>✓ Sin formatos en rotura para este transporte.</div>
-              : <>
-                  <div style={{ fontSize:"11px", color:"#9CA3AF", fontWeight:700, letterSpacing:"0.08em", marginBottom:"10px" }}>
-                    {soloRotura.length} FORMATO{soloRotura.length!==1?"S":""} EN ROTURA DE STOCK
+          {(() => {
+            const [verTodos, setVerTodos] = React.useState(false);
+            const listaVisible = verTodos ? formatosDelTransp : soloRotura;
+            return (
+              <div style={{ overflowY:"auto", flex:1 }}>
+                {/* Header toggleable */}
+                <div style={{ padding:"10px 20px", borderBottom:"1px solid #2A2A35", display:"flex", alignItems:"center", justifyContent:"space-between", background:"#111118" }}>
+                  <div style={{ fontSize:"11px", color:"#9CA3AF", fontWeight:700, letterSpacing:"0.08em" }}>
+                    {verTodos
+                      ? <>{formatosDelTransp.length} FORMATO{formatosDelTransp.length!==1?"S":""} EN ESTE TRANSPORTE {soloRotura.length>0 && <span style={{ color:"#fca5a5" }}>({soloRotura.length} en rotura)</span>}</>
+                      : soloRotura.length === 0
+                        ? <span style={{ color:"#4ade80" }}>✓ Sin formatos en rotura</span>
+                        : <>{soloRotura.length} FORMATO{soloRotura.length!==1?"S":""} EN ROTURA DE STOCK</>
+                    }
                   </div>
-                  <div style={{ display:"flex", flexDirection:"column", gap:"8px" }}>
-                    {soloRotura.map(({ cod, totalQty, palesQty, stock, clientes }) => (
-                      <div key={cod} style={{ background:"#1a0808", border:"1px solid #7f1d1d", borderLeft:"3px solid #ef4444", borderRadius:"8px", padding:"10px 14px" }}>
-                        <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:"6px", flexWrap:"wrap", gap:"6px" }}>
-                          <span style={{ color:"#fca5a5", fontWeight:800, fontSize:"14px", fontFamily:"'DM Mono',monospace" }}>{cod}</span>
-                          <div style={{ display:"flex", gap:"14px", fontSize:"11px", flexWrap:"wrap" }}>
-                            <span style={{ color:"#9CA3AF" }}>Pedido: <span style={{ color:"#F3F4F6", fontWeight:700 }}>{totalQty} uds</span></span>
-                            {palesQty !== "—" && <span style={{ color:"#9CA3AF" }}>Pales: <span style={{ color:"#fca5a5", fontWeight:700 }}>{palesQty}</span></span>}
-                            {stock.disponible !== undefined && <span style={{ color:"#9CA3AF" }}>Stock disp.: <span style={{ color:parseFloat(stock.disponible)<0?"#ef4444":"#4ade80", fontWeight:700 }}>{stock.disponible}</span></span>}
-                          </div>
+                  {formatosDelTransp.length > 0 && (
+                    <button onClick={e => { e.stopPropagation(); setVerTodos(v => !v); }}
+                      style={{ background: verTodos ? "#1e3a5f" : "#1A1A24", border:`1px solid ${verTodos?"#38BDF8":"#3F3F46"}`, borderRadius:"6px", color: verTodos ? "#38BDF8" : "#9CA3AF", padding:"4px 10px", fontSize:"11px", fontWeight:700, cursor:"pointer", fontFamily:"inherit" }}>
+                      {verTodos ? "Solo roturas" : `📦 Ver todos (${formatosDelTransp.length})`}
+                    </button>
+                  )}
+                </div>
+
+                <div style={{ padding:"14px 20px" }}>
+                  {listaVisible.length === 0 && !verTodos && (
+                    <div style={{ color:"#4ade80", textAlign:"center", padding:"30px", fontSize:"13px" }}>✓ Sin formatos en rotura para este transporte.</div>
+                  )}
+                  {listaVisible.length > 0 && (
+                    <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(58px, 1fr))", gap:"6px" }}>
+                      {listaVisible.map(({ cod, totalQty, palesQty, esCritico }) => (
+                        <div key={cod} style={{
+                          background: esCritico ? "#1a0808" : "#1A1A24",
+                          border: `1px solid ${esCritico ? "#ef4444" : "#2A2A35"}`,
+                          borderTop: `3px solid ${esCritico ? "#ef4444" : "#3F3F46"}`,
+                          borderRadius:"7px",
+                          padding:"6px 6px",
+                          display:"flex", flexDirection:"column", alignItems:"center", gap:"3px",
+                          textAlign:"center"
+                        }}>
+                          {esCritico && <span style={{ fontSize:"8px", color:"#ef4444", fontWeight:900, lineHeight:1 }}>🚨</span>}
+                          <span style={{ color: esCritico ? "#fca5a5" : "#E5E7EB", fontWeight:800, fontSize:"12px", fontFamily:"'DM Mono','JetBrains Mono',monospace", lineHeight:1 }}>{cod}</span>
+                          <div style={{ width:"100%", height:"1px", background: esCritico ? "#3f1010" : "#2A2A35", margin:"1px 0" }}/>
+                          <div style={{ fontSize:"12px", color: esCritico ? "#fca5a5" : "#F3F4F6", fontWeight:700, lineHeight:1 }}>{totalQty} <span style={{ fontSize:"9px", color:"#6B7280" }}>uds</span></div>
+                          {palesQty !== "—" && <div style={{ fontSize:"10px", color: esCritico ? "#fca5a5" : "#9CA3AF", fontWeight:600, lineHeight:1 }}>{palesQty} <span style={{ fontSize:"8px", color:"#6B7280" }}>pal</span></div>}
                         </div>
-                        <div style={{ display:"flex", flexDirection:"column", gap:"3px", borderTop:"1px solid #3f1010", paddingTop:"6px" }}>
-                          {clientes.map((p,pi) => (
-                            <div key={pi} style={{ display:"flex", gap:"10px", fontSize:"11px", color:"#9CA3AF", alignItems:"center" }}>
-                              <span style={{ color:"#D1D5DB", fontWeight:600, flex:1, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{p.cliente}</span>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </>
-            }
-          </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          })()}
         </div>
       </div>
     );
@@ -3010,81 +2891,11 @@ function App() {
     );
   };
 
-  // ── AlertaPopup ───────────────────────────────────────────────────
-  const AlertaPopup = () => {
-    if (!alertaPopup) return null;
-    const { t, fid } = alertaPopup;
-    const pm = dayData[fid]?.pedidosMap || {};
-    const sm = dayData[fid]?.sapStockMap || {};
-    const criticosCods = new Set((dayData[fid]?.sapCriticos || []).map(r => r.cod));
-    const todosFormatos = [];
-    Object.entries(pm).forEach(([cod, peds]) => {
-      const pedCamion = peds.filter(p => String(p.transporte||"").trim() === t.nTransp);
-      if (!pedCamion.length) return;
-      const totalQty = pedCamion.reduce((s,p) => s + (Number(p.qty)||0), 0);
-      const stock = sm[cod] || {};
-      const udsXPale = productos.find(p => p.cod === cod)?.udsPale || null;
-      const palesQty = udsXPale ? (totalQty / udsXPale).toFixed(1) : "—";
-      todosFormatos.push({ cod, totalQty, palesQty, stock, esCritico: criticosCods.has(cod) });
-    });
-    todosFormatos.sort((a,b) => (b.esCritico?1:0) - (a.esCritico?1:0));
-    const colNum = (() => {
-      if (!t.fechaEnt) return "#9CA3AF";
-      const [d,m,y] = t.fechaEnt.split("/");
-      const f = new Date(`20${y}-${m}-${d}`); const hoy = new Date(); hoy.setHours(0,0,0,0);
-      const diff = Math.round((f-hoy)/86400000);
-      if (diff<0) return "#ef4444"; if (diff===0) return "#4ade80"; if (diff===1) return "#38BDF8"; return "#fb923c";
-    })();
-    return (
-      <div onClick={() => setAlertaPopup(null)} style={{ position:"fixed", inset:0, background:"#000000BB", zIndex:1100, display:"flex", alignItems:"center", justifyContent:"center", padding:"20px" }}>
-        <div onClick={e => e.stopPropagation()} style={{ background:"#16161C", border:"1px solid #2A2A35", borderRadius:"12px", width:"100%", maxWidth:"720px", maxHeight:"80vh", display:"flex", flexDirection:"column", boxShadow:"0 24px 64px #000" }}>
-          <div style={{ padding:"16px 20px", borderBottom:"1px solid #2A2A35", display:"flex", alignItems:"flex-start", justifyContent:"space-between", gap:"12px" }}>
-            <div>
-              <div style={{ display:"flex", alignItems:"center", gap:"8px", marginBottom:"4px", flexWrap:"wrap" }}>
-                <span style={{ color:colNum, fontWeight:900, fontSize:"20px", fontFamily:"'JetBrains Mono','DM Mono',monospace" }}>{t.nTransp}</span>
-                {t.fechaEnt && <span style={{ background:colNum+"22", color:colNum, border:`1px solid ${colNum}44`, borderRadius:"6px", padding:"2px 8px", fontSize:"11px", fontWeight:700 }}>📅 {t.fechaEnt}</span>}
-                <span style={{ background:"#7f1d1d", color:"#fca5a5", borderRadius:"6px", padding:"2px 8px", fontSize:"11px", fontWeight:700 }}>🚨 {t.formatos.length} en rotura</span>
-              </div>
-              <div style={{ color:"#F3F4F6", fontWeight:700, fontSize:"16px" }}>{t.cliente}</div>
-              <div style={{ color:"#9CA3AF", fontWeight:500, fontSize:"14px" }}>{t.transport}</div>
-            </div>
-            <button onClick={() => setAlertaPopup(null)} style={{ background:"#2A2A35", border:"none", color:"#9CA3AF", borderRadius:"6px", padding:"6px 12px", cursor:"pointer", fontSize:"16px", flexShrink:0 }}>✕</button>
-          </div>
-          <div style={{ overflowY:"auto", padding:"16px 20px", flex:1 }}>
-            {todosFormatos.length === 0
-              ? <div style={{ color:"#606070", textAlign:"center", padding:"40px", fontSize:"13px" }}>Carga el Excel de pedidos para ver los formatos.</div>
-              : <>
-                  <div style={{ fontSize:"11px", color:"#9CA3AF", fontWeight:700, letterSpacing:"0.08em", marginBottom:"10px" }}>
-                    {todosFormatos.length} FORMATO{todosFormatos.length!==1?"S":""} EN ESTE TRANSPORTE
-                    <span style={{ color:"#fca5a5", marginLeft:"8px" }}>({todosFormatos.filter(f=>f.esCritico).length} en rotura)</span>
-                  </div>
-                  <div style={{ display:"flex", flexDirection:"column", gap:"6px" }}>
-                    {todosFormatos.map(({ cod, totalQty, palesQty, stock, esCritico }) => (
-                      <div key={cod} style={{ background: esCritico?"#1a0808":"#1A1A24", border:`1px solid ${esCritico?"#7f1d1d":"#2A2A35"}`, borderLeft:`3px solid ${esCritico?"#ef4444":"#3F3F46"}`, borderRadius:"8px", padding:"10px 14px", display:"flex", alignItems:"center", justifyContent:"space-between", flexWrap:"wrap", gap:"6px" }}>
-                        <div style={{ display:"flex", alignItems:"center", gap:"8px" }}>
-                          {esCritico && <span style={{ fontSize:"10px", background:"#7f1d1d", color:"#fca5a5", borderRadius:"4px", padding:"1px 6px", fontWeight:700 }}>🚨 ROTURA</span>}
-                          <span style={{ color: esCritico?"#fca5a5":"#E5E7EB", fontWeight:800, fontSize:"14px", fontFamily:"'DM Mono',monospace" }}>{cod}</span>
-                        </div>
-                        <div style={{ display:"flex", gap:"14px", fontSize:"12px", flexWrap:"wrap" }}>
-                          <span style={{ color:"#9CA3AF" }}>Pedido: <span style={{ color:"#F3F4F6", fontWeight:700 }}>{totalQty} uds</span></span>
-                          {palesQty !== "—" && <span style={{ color:"#9CA3AF" }}>Pales: <span style={{ color: esCritico?"#fca5a5":"#4ade80", fontWeight:700 }}>{palesQty}</span></span>}
-                          {stock.disponible !== undefined && <span style={{ color:"#9CA3AF" }}>Stock disp.: <span style={{ color: parseFloat(stock.disponible)<0?"#ef4444":"#4ade80", fontWeight:700 }}>{stock.disponible}</span></span>}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </>
-            }
-          </div>
-        </div>
-      </div>
-    );
-  };
 
   return (
     <div style={{ minHeight:"100vh", background: "#111116", color: "#FFFFFF", fontFamily:"'Outfit','DM Sans',system-ui,sans-serif", display:"flex", flexDirection:"column" }}>
       <CamionPopup />
-      <AlertaPopup />
+
       <MapPopup />
       <div style={{ background: "#111116", borderBottom: "1px solid #44444F", padding:"10px 20px", display:"flex", alignItems:"center", justifyContent:"space-between", position:"sticky", top:0, zIndex:20 }}>
         <div style={{ display:"flex", alignItems:"center", gap:"12px" }}>
@@ -3138,7 +2949,7 @@ function App() {
           { id:"stocks",        label:"STOCKS",          icon:"📦", color: fabColor },
           { id:"reparto",       label:"REPARTO",         icon:"📊", color:"#A78BFA" },
           { id:"centros",       label:"CENTROS LOG.",    icon:"🏬", color:"#06B6D4" },
-          { id:"alertas",       label:"ALERTAS",         icon:"🚨", color:"#EF4444" },
+
           ...(activeFab==="agrela" ? [{ id:"almacen", label:"ALMACÉN AUTO.", icon:"🏭", color:"#EF4444" }] : []),
         ];
         return (
@@ -3156,7 +2967,7 @@ function App() {
         );
       })()}
       {/* Content */}
-      <div style={{ flex:1, padding:"16px 20px", maxWidth: ["stocks","alertas"].includes(activeSection) ? "100%" : activeSection === "transporte" ? "100%" : "1200px", width:"100%", margin:"0 auto", boxSizing:"border-box", background: activeSection === "transporte" ? "#2E2E40" : "transparent" }}>
+      <div style={{ flex:1, padding:"16px 20px", maxWidth: ["stocks"].includes(activeSection) ? "100%" : activeSection === "transporte" ? "100%" : "1200px", width:"100%", margin:"0 auto", boxSizing:"border-box", background: activeSection === "transporte" ? "#2E2E40" : "transparent" }}>
         {loading && activeSection!=="historico" ? (
           <div style={{ textAlign:"center", color:"#F9FAFB", padding:"60px" }}>Cargando...</div>
         ) : (
@@ -3167,7 +2978,7 @@ function App() {
             {activeSection==="almacen"       && renderAlmacen()}
             {activeSection==="planificacion" && renderPlanificacion()}
             {activeSection==="centros"       && renderCentros()}
-            {activeSection==="alertas"       && renderAlertas()}
+
           </div>
         )}
       </div>
