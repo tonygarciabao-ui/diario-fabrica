@@ -260,7 +260,7 @@ function App() {
     });
     return found ? pesosAgencia[found] : null;
   };
-  const tienePlvSpv = (c) => /\bPLV\b|\bSPV\b/i.test(c.textos || "");
+  const tienePlvSpv = (c) => /\bPLV\b|\bSPV\b|\bSERVICIOS REUNIDOS\b|\bSR\b/i.test(c.textos || "");
 
   const isPesoExcedido = (c, fid) => {
     if (!c.peso) return false;
@@ -322,7 +322,7 @@ function App() {
   const setPaleInput = (cod, field, val) => setPaleInputs(p => ({...p, [cod]:{...(p[cod]||{}), [field]:val}}));
   const [palesConfig, setPalesConfig] = useState({pckCj:"", unidPale:""});
   const [showConfig, setShowConfig] = useState(false);
-  const [showHelp, setShowHelp] = useState(false);
+
   const [planData, setPlanData] = useState({ agrela:[], moras:[] });
   const [planFecha, setPlanFecha] = useState({ agrela:"", moras:"" });
   const [centrosData, setCentrosData] = useState({moras:null, ar2:null, ar1:null});
@@ -774,9 +774,11 @@ function App() {
               const texto = c.textos || "";
               const tienePLV = /\bPLV\b/i.test(texto);
               const tieneSPV = /\bSPV\b/i.test(texto);
+              const tieneSR  = /\bSERVICIOS REUNIDOS\b|\bSR\b/i.test(texto);
               return <>
                 {tienePLV && <span title="Lleva PLV" style={{ display:"inline-flex", alignItems:"center", justifyContent:"center", width:"22px", height:"22px", borderRadius:"4px", background:"#F59E0B", color:"#111116", fontSize:"9px", fontWeight:900, letterSpacing:"0.02em", lineHeight:1, flexShrink:0 }}>PLV</span>}
                 {tieneSPV && <span title="Lleva SPV" style={{ display:"inline-flex", alignItems:"center", justifyContent:"center", width:"22px", height:"22px", borderRadius:"4px", background:"#F59E0B", color:"#111116", fontSize:"9px", fontWeight:900, letterSpacing:"0.02em", lineHeight:1, flexShrink:0 }}>SPV</span>}
+                {tieneSR  && <span title="Lleva Servicios Reunidos" style={{ display:"inline-flex", alignItems:"center", justifyContent:"center", width:"22px", height:"22px", borderRadius:"4px", background:"#F59E0B", color:"#111116", fontSize:"9px", fontWeight:900, letterSpacing:"0.02em", lineHeight:1, flexShrink:0 }}>SR</span>}
               </>;
             })()}
             {c.optimizada === false && (
@@ -2583,6 +2585,7 @@ function App() {
             <div style={{ padding:"8px 20px", borderBottom:"1px solid #2A2A35", background:"#1a1500", display:"flex", alignItems:"center", gap:"10px" }}>
               {/\bPLV\b/i.test(c.textos||"") && <span style={{ background:"#F59E0B", color:"#111116", fontWeight:900, fontSize:"11px", borderRadius:"4px", padding:"2px 8px" }}>PLV</span>}
               {/\bSPV\b/i.test(c.textos||"") && <span style={{ background:"#F59E0B", color:"#111116", fontWeight:900, fontSize:"11px", borderRadius:"4px", padding:"2px 8px" }}>SPV</span>}
+              {/\bSERVICIOS REUNIDOS\b|\bSR\b/i.test(c.textos||"") && <span style={{ background:"#F59E0B", color:"#111116", fontWeight:900, fontSize:"11px", borderRadius:"4px", padding:"2px 8px" }}>SR</span>}
               <span style={{ color:"#fbbf24", fontWeight:600, fontSize:"12px" }}>Este camión lleva material — espacio no optimizado</span>
             </div>
           )}
@@ -2936,7 +2939,7 @@ function App() {
           </div>
           {savedMsg && <div style={{ fontSize:"11px", color:"#A3E635", transition:"color 0.3s" }}>{savedMsg}</div>}
           <div title={fbReady ? "Conectado a Firebase" : "Sin conexión Firebase"} style={{ width:8, height:8, borderRadius:"50%", background: fbReady ? "#22C55E" : "#6B7280", flexShrink:0 }}/>
-          <button onClick={() => setShowHelp(true)} style={{ background:"#2D2D3A", border:"none", color:"#D1D5DB", borderRadius:"8px", padding:"6px 12px", cursor:"pointer", fontSize:"18px" }} title="Ayuda">❓</button>
+
           <button onClick={() => setShowConfig(true)} style={{ background:"#2D2D3A", border:"none", color:"#D1D5DB", borderRadius:"8px", padding:"6px 12px", cursor:"pointer", fontSize:"18px" }} title="Configuración">⚙️</button>
         </div>
       </div>
@@ -2983,35 +2986,7 @@ function App() {
         )}
       </div>
       {/* Config Modal - Pantalla completa */}
-      {/* Panel de Ayuda */}
-      {showHelp && (
-        <div onClick={() => setShowHelp(false)} style={{ position:"fixed", inset:0, background:"#000000CC", zIndex:2000, display:"flex", alignItems:"center", justifyContent:"center", padding:"20px" }}>
-          <div onClick={e => e.stopPropagation()} style={{ background:"#16161C", border:"1px solid #2A2A35", borderRadius:"12px", width:"100%", maxWidth:"900px", boxShadow:"0 24px 64px #000", overflow:"hidden" }}>
-            <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"16px 20px", borderBottom:"1px solid #2A2A35" }}>
-              <div style={{ display:"flex", alignItems:"center", gap:"10px" }}>
-                <span style={{ fontSize:"20px" }}>❓</span>
-                <span style={{ fontWeight:700, fontSize:"15px", color:"#F3F4F6" }}>Ayuda — Diario Fábrica</span>
-              </div>
-              <button onClick={() => setShowHelp(false)} style={{ background:"#27272A", border:"1px solid #3F3F46", color:"#9CA3AF", cursor:"pointer", fontSize:"14px", padding:"6px 14px", borderRadius:"6px", fontFamily:"inherit" }}>✕ Cerrar</button>
-            </div>
-            <div style={{ padding:"20px", display:"flex", flexDirection:"column", gap:"20px" }}>
-              <div>
-                <div style={{ fontSize:"13px", color:"#F59E0B", fontWeight:700, marginBottom:"10px" }}>🚛 Cómo usar la pestaña CARGAS</div>
-                <div style={{ position:"relative", paddingBottom:"56.25%", height:0, borderRadius:"8px", overflow:"hidden", background:"#111116" }}>
-                  <iframe src="https://www.youtube-nocookie.com/embed/98_Hzcda3AE?rel=0"
-                    style={{ position:"absolute", top:0, left:0, width:"100%", height:"100%", border:"none" }}
-                    allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
-                    allowFullScreen />
-                </div>
-                <div style={{ marginTop:"8px", textAlign:"right" }}>
-                  <a href="https://youtu.be/98_Hzcda3AE" target="_blank" rel="noopener noreferrer"
-                    style={{ color:"#38BDF8", fontSize:"11px", textDecoration:"none" }}>▶ Abrir en YouTube →</a>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
+
 
       {showConfig && (
         <div style={{ position:"fixed", inset:0, background:"#111116", zIndex:100, display:"flex", flexDirection:"column", overflow:"hidden" }}>
