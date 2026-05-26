@@ -608,7 +608,7 @@ function App() {
   const getPlanForCod = (cod) => (planData[activeFab] || []).filter(p => p.cod === cod);
 
   // ── Cargas XLSX parser ──────────────────────────────────────────
-  const parseCargasXlsx = (arrayBuffer, fid, esAyer=false) => {
+  const parseCargasXlsx = (arrayBuffer, fid, esAyer=false, merge=false) => {
     try {
       const wb = XLSX.read(arrayBuffer, { type:"array" });
       const ws = wb.Sheets[wb.SheetNames[0]];
@@ -706,17 +706,88 @@ function App() {
       const pendientes   = pendientes_list.length;
       const total        = pendientes_list.length + registrados.length + enCarga.length + finCarga.length;
       if (esAyer) {
-        // Solo guardamos los no finalizados del día anterior
         const noFinalizados = unique.filter(c => !isFinCarga(c)).map(c => ({...c, esAyer: true}));
         setCargasAyer(prev => ({ ...prev, [fid]: noFinalizados }));
         setCargasAyerFecha(prev => ({ ...prev, [fid]: new Date().toLocaleTimeString("es-ES",{hour:"2-digit",minute:"2-digit"}) }));
         showSaved(`✓ Día anterior: ${noFinalizados.length} camiones sin finalizar`);
+      } else if (merge) {
+        setCargasData(prev => {
+          const existing = prev[fid];
+          if (!existing) return { ...prev, [fid]: { total, pendientes, registrados, enCarga, finCarga, pendientes_list, todos: unique } };
+          // Fusionar evitando duplicados por nTransp
+          const existingIds = new Set(existing.todos.map(c => c.nTransp));
+          const newUnique = unique.filter(c => !existingIds.has(c.nTransp));
+          const merged_todos        = [...existing.todos,         ...newUnique];
+          const merged_pendientes   = [...existing.pendientes_list, ...newUnique.filter(c => isPendiente(c))];
+          const merged_registrados  = [...existing.registrados,   ...newUnique.filter(c => isRegistrado(c))];
+          const merged_enCarga      = [...existing.enCarga,       ...newUnique.filter(c => isEnCarga(c))];
+          const merged_finCarga     = [...existing.finCarga,      ...newUnique.filter(c => isFinCarga(c))];
+          return { ...prev, [fid]: {
+            todos: merged_todos,
+            pendientes_list: merged_pendientes,
+            registrados: merged_registrados,
+            enCarga: merged_enCarga,
+            finCarga: merged_finCarga,
+            total: merged_todos.length,
+            pendientes: merged_pendientes.length,
+          }};
+        });
+        setCargasFecha(prev => ({ ...prev, [fid]: new Date().toLocaleTimeString("es-ES",{hour:"2-digit",minute:"2-digit"}) }));
+        showSaved(`✓ +${unique.length} camiones añadidos`);
       } else {
         setCargasData(prev => ({ ...prev, [fid]: { total, pendientes, registrados, enCarga, finCarga, pendientes_list, todos: unique } }));
         setCargasFecha(prev => ({ ...prev, [fid]: new Date().toLocaleTimeString("es-ES",{hour:"2-digit",minute:"2-digit"}) }));
         showSaved("✓ Cargas: " + total + " camiones, " + pendientes + " pendientes");
       }
     } catch(e) { console.error("parseCargasXlsx:", e); showSaved("⚠️ Error: " + e.message); }
+  };
+
+  // ── Auto-detector de tipo de Excel ────────────────────────────────
+  const detectarYParsear = (arrayBuffer, fid) => {
+    try {
+      const wb = XLSX.read(arrayBuffer, { type:"array" });
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(ws, { header:1, defval:null, raw:false });
+      const header = (rows[0] || []).map(h => h ? String(h).trim() : "");
+      const headerStr = header.join("|").toLowerCase();
+      const cell00 = ws["A1"] ? String(ws["A1"].v || "").trim().toLowerCase() : "";
+
+      // Planificación: tiene "Grupo:" en A1 o columnas Código/Inicio Orden
+      if (/grupo\s*:/i.test(cell00) || header.some(h => /inicio orden/i.test(h)) || header.some(h => /^código$/i.test(h) && header.some(h2 => /hora inicio/i.test(h2)))) {
+        parsePlanXlsx(arrayBuffer);
+        return "📅 Planificación";
+      }
+      // Stocks SAP: primera fila tiene códigos numéricos de 4 dígitos como cabeceras de columna
+      const numCodes = header.filter(h => /^\d{4}$/.test(h) || /^[A-Z]\d{3}$/.test(h));
+      const firstCol = ws["A2"] ? String(ws["A2"].v || "").trim() : "";
+
+      // Pedidos: tiene códigos de producto (0004, A056...) + Fech.Carga o Nombre Agencia
+      if (numCodes.length > 3 && (headerStr.includes("fech.carga") || headerStr.includes("nombre agencia") || headerStr.includes("fec.pedido"))) {
+        parsePedidosXlsx(arrayBuffer, fid);
+        return "📋 Pedidos";
+      }
+      // Stocks SAP: tiene códigos de producto + filas con Físico/Bloqueado/Disponible
+      if (numCodes.length > 3 && /físico|bloqueado|tránsito|disponible/i.test(headerStr)) {
+        parseSAPXlsx(arrayBuffer, fid);
+        return "📦 Stocks";
+      }
+      // Cargas: tiene Transp.Status o Número de transporte o Systore Status
+      if (headerStr.includes("transp") && (headerStr.includes("status") || headerStr.includes("número de transporte") || headerStr.includes("transportista") || headerStr.includes("systore"))) {
+        parseCargasXlsx(arrayBuffer, fid);
+        return "🚛 Cargas";
+      }
+      // Stocks alternativo (filas con etiquetas en col A)
+      if (/físico|stock|disponible/i.test(firstCol) || rows.slice(0,10).some(r => /físico|bloqueado/i.test(String(r?.[0]||"")))) {
+        parseSAPXlsx(arrayBuffer, fid);
+        return "📦 Stocks";
+      }
+      // Fallback: intentar como cargas
+      parseCargasXlsx(arrayBuffer, fid);
+      return "🚛 Cargas (auto)";
+    } catch(e) {
+      console.error("detectarYParsear:", e);
+      return "⚠️ Error";
+    }
   };
 
   const renderTransporte = () => {
@@ -738,7 +809,8 @@ function App() {
     };
 
     // Tarjeta individual de camión
-    const CamionCard = ({ c, color }) => {
+    const CamionCard = ({ c, color, fid: cardFid }) => {
+      const fid = cardFid || fac.id;
       // Color de fecha solo para el badge, no para la tarjeta
       const getFechaColor = () => {
         if (!c.fechaEnt) return "#52525B";
@@ -783,6 +855,9 @@ function App() {
             })()}
             {c.optimizada === false && (
               <span title="Carga no optimizada" style={{ fontSize:"18px", lineHeight:1, filter:"saturate(0) brightness(0.5) sepia(1) hue-rotate(-50deg) saturate(5) brightness(1.2)" }}>⚙️</span>
+            )}
+            {isPesoExcedido(c, fid) && (
+              <span title={`Peso excedido: ${c.peso}`} style={{ fontSize:"18px", lineHeight:1 }}>⚖️</span>
             )}
             {incids.map((inc,i) => { const info = INCIDENCIAS.find(x => x.id===inc.tipo); return info ? <span key={i} style={{ fontSize:"18px", lineHeight:1 }} title={info.label}>{info.icon}</span> : null; })}
             {alerta && <span style={{ fontSize:"22px", lineHeight:1, opacity:0.9 }}>🚨</span>}
@@ -884,6 +959,37 @@ function App() {
                 const reader = new FileReader();
                 reader.onload = ev => parseCargasXlsx(ev.target.result, fac.id);
                 reader.readAsArrayBuffer(file);
+                e.target.value = "";
+              }} />
+          </label>
+          <label style={{ ...C.btn(fac.color), cursor:"pointer", fontSize:"11px", opacity:0.85 }} title="Selecciona varios archivos Excel: Cargas, Pedidos, Stocks, Planificación...">
+            📂+ MÚLTIPLE
+            <input type="file" accept=".xlsx,.xls" multiple style={{ display:"none" }}
+              onChange={e => {
+                const files = Array.from(e.target.files);
+                if (!files.length) return;
+                if (files.length === 1) {
+                  const reader = new FileReader();
+                  reader.onload = ev => detectarYParsear(ev.target.result, fac.id);
+                  reader.readAsArrayBuffer(files[0]);
+                  e.target.value = ""; return;
+                }
+                showSaved(`⏳ Procesando ${files.length} archivos...`);
+                let pending = files.length;
+                const results = new Array(files.length);
+                const buffers = new Array(files.length);
+                files.forEach((file, idx) => {
+                  const reader = new FileReader();
+                  reader.onload = ev => {
+                    buffers[idx] = ev.target.result;
+                    pending--;
+                    if (pending === 0) {
+                      const tipos = buffers.map(buf => detectarYParsear(buf, fac.id));
+                      showSaved(`✅ ${files.length} archivos cargados: ${tipos.join(", ")}`);
+                    }
+                  };
+                  reader.readAsArrayBuffer(file);
+                });
                 e.target.value = "";
               }} />
           </label>
@@ -1019,8 +1125,11 @@ function App() {
         .sort((a,b) => { const aNum=/^\d+$/.test(a.cod), bNum=/^\d+$/.test(b.cod); if(aNum&&!bNum)return -1; if(!aNum&&bNum)return 1; if(aNum&&bNum)return parseInt(a.cod)-parseInt(b.cod); return a.cod.localeCompare(b.cod); });
 
       const hora = new Date().toLocaleTimeString("es-ES",{hour:"2-digit",minute:"2-digit"});
-      const updated = { ...dayData, [fid]: { ...dayData[fid], sapCriticos: criticos, sapStockMap: allStocks, sapFecha: new Date().toLocaleTimeString("es-ES",{hour:"2-digit",minute:"2-digit"}), pedidosMap: {}, pedidosFecha: "", sapLlenado: {} }};
-      saveData(updated);
+      setDayData(prev => {
+        const updated = { ...prev, [fid]: { ...prev[fid], sapCriticos: criticos, sapStockMap: allStocks, sapFecha: hora }};
+        saveData(updated);
+        return updated;
+      });
       showSaved("✓ Stocks " + FACTORIES.find(f=>f.id===fid).label + ": " + criticos.length + " críticos");
     } catch(e) { console.error("parseSAPXlsx error:", e); showSaved("⚠️ Error al leer stocks: " + e.message); }
   };
@@ -1077,8 +1186,12 @@ function App() {
     }).filter(r => r.diff <= 0 && r.pedidos > 0)
       .sort((a,b) => { const aNum=/^\d+$/.test(a.cod), bNum=/^\d+$/.test(b.cod); if(aNum&&!bNum)return -1; if(!aNum&&bNum)return 1; if(aNum&&bNum)return parseInt(a.cod)-parseInt(b.cod); return a.cod.localeCompare(b.cod); });
 
-    const updated = { ...dayData, [fid]: { ...dayData[fid], sapCriticos: criticos, sapStockMap: allStocks2, sapFecha: new Date().toLocaleTimeString("es-ES",{hour:"2-digit",minute:"2-digit"}) }};
-    saveData(updated);
+    const sapFecha = new Date().toLocaleTimeString("es-ES",{hour:"2-digit",minute:"2-digit"});
+    setDayData(prev => {
+      const updated = { ...prev, [fid]: { ...prev[fid], sapCriticos: criticos, sapStockMap: allStocks2, sapFecha }};
+      saveData(updated);
+      return updated;
+    });
     showSaved("✓ SAP " + FACTORIES.find(f=>f.id===fid).label + ": " + criticos.length + " críticos");
   };
 
@@ -1153,8 +1266,11 @@ function App() {
         });
       });
       const hora = new Date().toLocaleTimeString("es-ES",{hour:"2-digit",minute:"2-digit"});
-      const updated = { ...dayData, [fid]: { ...dayData[fid], pedidosMap: map, pedidosFecha: hora }};
-      saveData(updated);
+      setDayData(prev => {
+        const updated = { ...prev, [fid]: { ...prev[fid], pedidosMap: map, pedidosFecha: hora }};
+        saveData(updated);
+        return updated;
+      });
       showSaved("✓ Pedidos cargados " + hora);
     } catch(e) { console.error("Pedidos parse error:", e); showSaved("⚠️ Error al leer pedidos"); }
   };
