@@ -634,9 +634,9 @@ function App() {
       const textosMap = {};
       const camiones = [];
       rows.slice(1).forEach(row => {
-        const status = row[iStatus] ? parseInt(String(row[iStatus])) : null;
+        const status = row[iStatus] !== null && row[iStatus] !== undefined && row[iStatus] !== "" ? parseInt(String(row[iStatus])) : null;
         const nTransp = row[iTransp] ? String(row[iTransp]).trim() : null;
-        if (!status || !nTransp) return;
+        if (status === null || isNaN(status) || !nTransp) return;
         // Acumular textos CSV por transporte
         if (iTextos >= 0 && row[iTextos]) {
           const txt = String(row[iTextos]).trim();
@@ -648,8 +648,19 @@ function App() {
           status,
           nTransp,
           cliente:    row[iCliente]   ? String(row[iCliente]).trim()   : "",
-          inicio:     row[iInicio]    ? String(row[iInicio]).trim()    : "",
-          fin:        row[iFin]       ? String(row[iFin]).trim()       : "",
+          inicio: (() => {
+            const v = row[iInicio] ? String(row[iInicio]).trim() : "";
+            // Moras: "27.05.2026-06:00" → extraer solo hora
+            const mHora = v.match(/(\d{2}:\d{2})(?:-(\d{2}:\d{2}))?$/);
+            if (mHora) return mHora[0];
+            return v;
+          })(),
+          fin: (() => {
+            const v = row[iFin] ? String(row[iFin]).trim() : "";
+            const mHora = v.match(/(\d{2}:\d{2})(?:-(\d{2}:\d{2}))?$/);
+            if (mHora) return mHora[0];
+            return v;
+          })(),
           transport:  row[iTransport] ? String(row[iTransport]).trim() : "",
           fechaEnt: (() => {
             const v = row[iFechaEnt];
@@ -672,7 +683,11 @@ function App() {
             return s.split("T")[0].trim();
           })(),
           isDup,
-          systore:  iSystore >= 0 && row[iSystore] ? parseInt(String(row[iSystore])) : null,
+          systore: (() => {
+            if (iSystore < 0 || !row[iSystore] && row[iSystore] !== 0) return null;
+            const v = parseInt(String(row[iSystore]));
+            return isNaN(v) ? null : v;
+          })(),
           textos: textosMap[nTransp] || "",
           poblacion: iPoblacion >= 0 && row[iPoblacion] ? String(row[iPoblacion]).trim() : "",
           tractora:  iTractora >= 0 && row[iTractora] ? String(row[iTractora]).trim() : "",
@@ -694,11 +709,12 @@ function App() {
       });
       // Stats based on unique transportes
       const unique = camiones.filter(c => !c.isDup);
-      const hasSystore = iSystore >= 0 && unique.some(c => c.systore !== null);
+      const conSystore = unique.filter(c => c.systore !== null).length;
+      const hasSystore = fid === "agrela" && iSystore >= 0 && conSystore > unique.length * 0.3;
       const isEnCarga    = (c) => hasSystore ? (c.systore === 3 && [2,3].includes(c.status)) : c.status === 3;
       const isFinCarga   = (c) => hasSystore ? (c.status >= 4 && c.systore === 3) : c.status >= 4;
       const isRegistrado = (c) => hasSystore ? (c.status === 2 && [1,2].includes(c.systore)) : c.status === 2;
-      const isPendiente  = (c) => hasSystore ? (c.status === 1 && [1,2].includes(c.systore)) : c.status === 1;
+      const isPendiente  = (c) => hasSystore ? (c.status === 1 && [1,2].includes(c.systore)) : [0,1].includes(c.status);
       const enCarga      = unique.filter(c => isEnCarga(c));
       const finCarga     = unique.filter(c => isFinCarga(c));
       const registrados  = unique.filter(c => isRegistrado(c));
@@ -766,15 +782,15 @@ function App() {
         parsePedidosXlsx(arrayBuffer, fid);
         return "📋 Pedidos";
       }
-      // Stocks SAP: tiene códigos de producto + filas con Físico/Bloqueado/Disponible
-      if (numCodes.length > 3 && /físico|bloqueado|tránsito|disponible/i.test(headerStr)) {
-        parseSAPXlsx(arrayBuffer, fid);
-        return "📦 Stocks";
-      }
-      // Cargas: tiene Transp.Status o Número de transporte o Systore Status
-      if (headerStr.includes("transp") && (headerStr.includes("status") || headerStr.includes("número de transporte") || headerStr.includes("transportista") || headerStr.includes("systore"))) {
+      // Cargas: tiene Número de transporte o (Transp.Status + Systore)
+      if (headerStr.includes("número de transporte") || (headerStr.includes("transp") && headerStr.includes("status") && (headerStr.includes("systore") || headerStr.includes("transportista")))) {
         parseCargasXlsx(arrayBuffer, fid);
         return "🚛 Cargas";
+      }
+      // Stocks SAP: tiene códigos de producto + filas con Físico/Bloqueado/Disponible
+      if (numCodes.length > 3 && /físico|bloqueado|disponible/i.test(headerStr)) {
+        parseSAPXlsx(arrayBuffer, fid);
+        return "📦 Stocks";
       }
       // Stocks alternativo (filas con etiquetas en col A)
       if (/físico|stock|disponible/i.test(firstCol) || rows.slice(0,10).some(r => /físico|bloqueado/i.test(String(r?.[0]||"")))) {
@@ -863,7 +879,13 @@ function App() {
             {alerta && <span style={{ fontSize:"22px", lineHeight:1, opacity:0.9 }}>🚨</span>}
           </div>
           <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", gap:"6px" }}>
-            <span style={{ color:"#FFFFFF", fontWeight:800, fontSize:"13px", fontFamily:"'DM Mono',monospace" }}>{c.nTransp}</span>
+            <div style={{ display:"flex", alignItems:"center", gap:"6px" }}>
+              <span style={{ color:"#FFFFFF", fontWeight:800, fontSize:"13px", fontFamily:"'DM Mono',monospace" }}>{c.nTransp}</span>
+              {(() => {
+                const tramo = dayData[fac.id]?.tramosMap?.[c.nTransp];
+                return tramo ? <span style={{ color:"#F87171", fontWeight:700, fontSize:"12px", fontFamily:"'DM Mono',monospace" }}>{tramo}</span> : null;
+              })()}
+            </div>
             {c.fechaEnt && (
               <span style={{ fontSize:"10px", fontWeight:700, color: fechaColor, background: fechaColor+"22", borderRadius:"4px", padding:"1px 6px", border:`1px solid ${fechaColor}44` }}>
                 📅 {c.fechaEnt}
@@ -878,7 +900,16 @@ function App() {
 
     // Sección colapsable con grid de columnas
     const SeccionGrid = ({ secKey, lbl, items, color, itemsAyer=[] }) => {
-      const sorted = sortByFecha(items);
+      const [sortMode, setSortMode] = React.useState("fecha"); // "fecha" | "tramo"
+      const tramosMap = dayData[fac.id]?.tramosMap || {};
+
+      const sortByTramo = (arr) => [...arr].sort((a,b) => {
+        const ta = tramosMap[a.nTransp] || "ZZZ";
+        const tb = tramosMap[b.nTransp] || "ZZZ";
+        return ta.localeCompare(tb);
+      });
+
+      const sorted = sortMode === "tramo" ? sortByTramo(items) : sortByFecha(items);
       const isOpen = openSections[fac.id][secKey];
       return (
         <div style={{ background:"#1A1A1F", border:`1px solid ${color}33`, borderRadius:"10px", overflow:"hidden", marginBottom:"12px" }}>
@@ -886,6 +917,16 @@ function App() {
             style={{ background:"#1E1E28", padding:"10px 16px", display:"flex", alignItems:"center", gap:"10px", cursor:"pointer", userSelect:"none", borderBottom: isOpen ? `1px solid ${color}22` : "none" }}>
             <span style={{ color:"#9CA3AF", fontSize:"11px" }}>{isOpen ? "▼" : "▶"}</span>
             <span style={{ color, fontWeight:800, fontSize:"13px", flex:1, letterSpacing:"0.05em" }}>{lbl}</span>
+            {isOpen && (
+              <div onClick={e => e.stopPropagation()} style={{ display:"flex", gap:"4px" }}>
+                {[["fecha","📅","Ordenar por fecha de entrega"],["tramo","🕐","Ordenar por tramo de carga"]].map(([mode, icon, tooltip]) => (
+                  <button key={mode} onClick={() => setSortMode(mode)} title={tooltip}
+                    style={{ background: sortMode === mode ? "#1e3a5f" : "#2D2D3A", border:`1px solid ${sortMode === mode ? "#38BDF8" : "#3F3F46"}`, borderRadius:"6px", color: sortMode === mode ? "#38BDF8" : "#9CA3AF", padding:"2px 8px", fontSize:"10px", fontWeight:700, cursor:"pointer", fontFamily:"inherit" }}>
+                    {icon}
+                  </button>
+                ))}
+              </div>
+            )}
             <span style={{ background:color+"22", color, border:`1px solid ${color}44`, borderRadius:"9999px", padding:"2px 12px", fontSize:"12px", fontWeight:800 }}>{items.length + itemsAyer.length}</span>
           </div>
           {isOpen && (
@@ -905,14 +946,36 @@ function App() {
               )}
               {sorted.length === 0 && itemsAyer.length === 0
                 ? <div style={{ color:"#606070", fontSize:"11px", fontStyle:"italic", padding:"8px" }}>Sin camiones</div>
+                : sortMode === "tramo"
+                  ? (() => {
+                      // Agrupar por tramo
+                      const grupos = {};
+                      sorted.forEach(c => {
+                        const key = tramosMap[c.nTransp] || "Sin tramo";
+                        if (!grupos[key]) grupos[key] = [];
+                        grupos[key].push(c);
+                      });
+                      return (
+                        <div style={{ display:"flex", gap:"10px", overflowX:"auto", paddingBottom:"4px" }}>
+                          {Object.entries(grupos).map(([tramo, items]) => (
+                            <div key={tramo} style={{ display:"flex", flexDirection:"column", gap:"6px", minWidth:"190px" }}>
+                              <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", gap:"6px" }}>
+                                <span style={{ color:"#38BDF8", fontWeight:800, fontSize:"12px", fontFamily:"'DM Mono',monospace", background:"#38BDF815", border:"1px solid #38BDF844", borderRadius:"6px", padding:"3px 8px" }}>🕐 {tramo}</span>
+                                <span style={{ color:"#38BDF8", fontSize:"11px", fontWeight:700, background:"#38BDF815", border:"1px solid #38BDF844", borderRadius:"9999px", padding:"1px 8px" }}>{items.length}</span>
+                              </div>
+                              {items.map(c => <CamionCard key={c.nTransp} c={c} color={color} />)}
+                            </div>
+                          ))}
+                        </div>
+                      );
+                    })()
                 : (() => {
-                    // Agrupar por fecha
-                    const grupos = {};
-                    sorted.forEach(c => {
-                      const key = c.fechaEnt || "Sin fecha";
-                      if (!grupos[key]) grupos[key] = [];
-                      grupos[key].push(c);
-                    });
+                      const grupos = {};
+                      sorted.forEach(c => {
+                        const key = c.fechaEnt || "Sin fecha";
+                        if (!grupos[key]) grupos[key] = [];
+                        grupos[key].push(c);
+                      });
                     const hoy = new Date(); hoy.setHours(0,0,0,0);
                     const getColor = (fechaStr) => {
                       if (!fechaStr || fechaStr === "Sin fecha") return "#52525B";
@@ -957,7 +1020,9 @@ function App() {
               onChange={e => {
                 const file = e.target.files[0]; if (!file) return;
                 const reader = new FileReader();
-                reader.onload = ev => parseCargasXlsx(ev.target.result, fac.id);
+                reader.onload = ev => {
+                  parseCargasXlsx(ev.target.result, fac.id);
+                };
                 reader.readAsArrayBuffer(file);
                 e.target.value = "";
               }} />
@@ -1027,7 +1092,7 @@ function App() {
           {[
             { lbl:"TOTALES",     val: cd ? cd.total : "—",          color: fac.color },
             { lbl:"ARRASTRADOS", val: cargasAyer[fac.id]?.length || "—", color:"#EF4444" },
-            { lbl:"PENDIENTES",  val: cd ? cd.pendientes : "—",      color:"#EF4444" },
+            { lbl:"PENDIENTES",  val: cd ? cd.pendientes_list.length + cd.registrados.length : "—", color:"#EF4444" },
             { lbl:"NOCTURNAS",   val: fd.transporteMeta?.nocturnas||"—", color:"#8B5CF6", manual:true },
           ].map(({lbl,val,color,manual}) => (
             <div key={lbl} style={{ background:"#16161C", borderRadius:"8px", padding:"6px 14px", textAlign:"center", border:"1px solid #2A2A35", minWidth:"80px" }}>
@@ -1217,6 +1282,7 @@ function App() {
       const iHora       = findCol(["Hora Carga","hora carga"]);
       const iFechaCarga = findCol(["Fech.Carga","Fecha Carga","fech.carga","fecha carga"]);
       const iHoraCarga  = findCol(["Hora Carga","hora carga"]);
+      const iTramo      = findCol(["Tramo","tramo"]);
       console.log("Cols - Cliente:",iCliente,"Transporte:",iTransp,"Fecha:",iFecha,"HoraCarga:",iHoraCarga,"FechaCarga:",iFechaCarga,"TotalCols:",header.length);
       // Find product code columns (4-digit numeric or letter codes)
       const prodCols = {};
@@ -1225,6 +1291,7 @@ function App() {
       });
       // Build map: code -> [{cliente, transporte, fecha, qty}]
       const map = {};
+      const tramosMap = {};
       rows.slice(1).forEach(row => {
         const cliente    = row[iCliente]  ? String(row[iCliente]).trim()  : "";
         const transporte = row[iTransp]   ? String(row[iTransp]).trim()   : "";
@@ -1255,7 +1322,9 @@ function App() {
           }
           return String(rawFechaCarga).trim();
         })();
-        const tramo      = iHoraCarga >= 0 && row[iHoraCarga] ? String(row[iHoraCarga]).trim() : "";
+        const tramo      = iTramo >= 0 && row[iTramo] ? String(row[iTramo]).trim() : "";
+        // Guardar tramo por número de transporte
+        if (transporte && tramo && !tramosMap[transporte]) tramosMap[transporte] = tramo;
         Object.entries(prodCols).forEach(([cod, ci]) => {
           const qty = row[ci];
           if (qty && qty !== 0) {
@@ -1267,7 +1336,7 @@ function App() {
       });
       const hora = new Date().toLocaleTimeString("es-ES",{hour:"2-digit",minute:"2-digit"});
       setDayData(prev => {
-        const updated = { ...prev, [fid]: { ...prev[fid], pedidosMap: map, pedidosFecha: hora }};
+        const updated = { ...prev, [fid]: { ...prev[fid], pedidosMap: map, tramosMap, pedidosFecha: hora }};
         saveData(updated);
         return updated;
       });
