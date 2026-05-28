@@ -244,7 +244,7 @@ function App() {
         const peso = r[1] ? Number(r[1]) : null;
         if (agencia && peso) map[agencia.toUpperCase()] = peso;
       });
-      savePesosAgencia(map);
+      savePesosAgenciaSync(map);
       showSaved(`✓ Pesos cargados: ${Object.keys(map).length} agencias`);
     } catch(e) { showSaved("⚠️ Error: " + e.message); }
   };
@@ -2562,11 +2562,59 @@ function App() {
     } catch(e) { console.warn("Firebase write error:", e); }
   };
 
+  // ── Guardar configuración en Firebase ─────────────────────────────
+  const fbSaveConfig = (patch) => {
+    fbSet("config_shared", { ...patch, _ts: Date.now() });
+  };
+
+  // Wrappers que guardan en localStorage Y Firebase
+  const saveIncidenciasConfigSync = (cfg) => {
+    saveIncidenciasConfig(cfg);
+    fbSaveConfig({ incidencias: cfg });
+  };
+  const savePesosAgenciaSync = (data) => {
+    savePesosAgencia(data);
+    fbSaveConfig({ pesosAgencia: data });
+  };
+  const saveAgenciasPrioritariasSync = (arr) => {
+    saveAgenciasPrioritarias(arr);
+    fbSaveConfig({ agenciasPrio: arr });
+  };
+  const setProductosSync = (v) => {
+    const next = typeof v === "function" ? v(productos) : v;
+    setProductos(next);
+    fbSaveConfig({ productos: next });
+  };
+  const setUmbralAlertaSaveSync = (v) => {
+    setUmbralAlertaSave(v);
+    fbSaveConfig({ umbral: Math.max(1, Number(v)||10) });
+  };
+
   // Cargar desde Firestore al arrancar
   React.useEffect(() => {
     const init = async () => {
       if (!window.__db) return;
       try {
+        // Cargar configuración compartida
+        const snapConfig = await window.__fsGetDoc(window.__fsDoc(window.__db, "diario", "config_shared"));
+        if (snapConfig.exists()) {
+          const cfg = snapConfig.data();
+          if (cfg.incidencias)  { setIncidenciasConfig(cfg.incidencias);  try { localStorage.setItem("diario_incidencias",   JSON.stringify(cfg.incidencias));  } catch(e){} }
+          if (cfg.pesosAgencia) { setPesosAgencia(cfg.pesosAgencia);       try { localStorage.setItem("diario_pesos_agencia", JSON.stringify(cfg.pesosAgencia)); } catch(e){} }
+          if (cfg.agenciasPrio) { setAgenciasPrioritarias(cfg.agenciasPrio); try { localStorage.setItem("diario_agencias_prio", JSON.stringify(cfg.agenciasPrio)); } catch(e){} }
+          if (cfg.productos)    { setProductosRaw(cfg.productos);           try { localStorage.setItem("diario_productos",     JSON.stringify(cfg.productos));    } catch(e){} }
+          if (cfg.umbral)       { setUmbralAlerta(cfg.umbral);              try { localStorage.setItem("diario_umbral",        cfg.umbral);                       } catch(e){} }
+        }
+        // Suscribir a cambios de configuración en tiempo real
+        window.__fsOnSnapshot(window.__fsDoc(window.__db, "diario", "config_shared"), (snap) => {
+          if (!snap.exists()) return;
+          const cfg = snap.data();
+          if (cfg.incidencias)  { setIncidenciasConfig(cfg.incidencias);    try { localStorage.setItem("diario_incidencias",   JSON.stringify(cfg.incidencias));  } catch(e){} }
+          if (cfg.pesosAgencia) { setPesosAgencia(cfg.pesosAgencia);         try { localStorage.setItem("diario_pesos_agencia", JSON.stringify(cfg.pesosAgencia)); } catch(e){} }
+          if (cfg.agenciasPrio) { setAgenciasPrioritarias(cfg.agenciasPrio); try { localStorage.setItem("diario_agencias_prio", JSON.stringify(cfg.agenciasPrio)); } catch(e){} }
+          if (cfg.productos)    { setProductosRaw(cfg.productos);             try { localStorage.setItem("diario_productos",     JSON.stringify(cfg.productos));    } catch(e){} }
+          if (cfg.umbral)       { setUmbralAlerta(cfg.umbral);                try { localStorage.setItem("diario_umbral",        cfg.umbral);                       } catch(e){} }
+        });
         // Cargar datos compartidos del día
         const snap = await window.__fsGetDoc(window.__fsDoc(window.__db, "diario", `shared_${todayKey}`));
         if (snap.exists()) {
@@ -3140,7 +3188,7 @@ function App() {
               <rect x="24" y="42" width="12" height="14" rx="2" fill="#111116"/>
             </svg>
           <span style={{ fontSize:"20px", fontWeight:700, color:"#FFFFFF", letterSpacing:"0.06em" }}>DIARIO FÁBRICA</span>
-          <span style={{ fontSize:"10px", color:"#9CA3AF", fontWeight:600, letterSpacing:"0.04em", marginLeft:"4px", alignSelf:"flex-end", marginBottom:"2px" }}>v1.0</span>
+          <span style={{ fontSize:"10px", color:"#9CA3AF", fontWeight:600, letterSpacing:"0.04em", marginLeft:"4px", alignSelf:"flex-end", marginBottom:"2px" }}>{(() => { const d = new Date(); return `v${String(d.getDate()).padStart(2,"0")}/${String(d.getMonth()+1).padStart(2,"0")}/${d.getFullYear()}`; })()}</span>
           {/* Selector fábrica */}
           <div style={{ display:"flex", gap:"4px", marginLeft:"8px", background:"#1E1E2A", borderRadius:"10px", padding:"3px" }}>
             {[{id:"agrela",label:"🏭 A Grela",color:"#D946EF"},{id:"moras",label:"🏭 Moras",color:"#38BDF8"}].map(f => (
@@ -3336,9 +3384,9 @@ function App() {
                 if (!editItem?.label?.trim()) return;
                 const cfg = [...incidenciasConfig];
                 if (editIdx === -1) cfg.push(editItem); else cfg[editIdx] = editItem;
-                saveIncidenciasConfig(cfg); setEditIdx(null); setEditItem(null);
+                saveIncidenciasConfigSync(cfg); setEditIdx(null); setEditItem(null);
               };
-              const deleteItem = (idx) => saveIncidenciasConfig(incidenciasConfig.filter((_,i) => i!==idx));
+              const deleteItem = (idx) => saveIncidenciasConfigSync(incidenciasConfig.filter((_,i) => i!==idx));
               return (
               <div style={{ maxWidth:"600px", margin:"0 auto" }}>
                 <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:"16px" }}>
@@ -3414,7 +3462,7 @@ function App() {
                       onChange={e => { const file = e.target.files[0]; if (!file) return; const reader = new FileReader(); reader.onload = ev => parsePesosAgenciaXlsx(ev.target.result); reader.readAsArrayBuffer(file); e.target.value=""; }} />
                   </label>
                   {Object.keys(pesosAgencia).length > 0 && (
-                    <button onClick={() => savePesosAgencia({})} style={{ background:"#3d0f0f", border:"none", color:"#fca5a5", borderRadius:"6px", padding:"7px 12px", cursor:"pointer", fontSize:"12px", fontFamily:"inherit" }}>🗑️ Borrar todo</button>
+                    <button onClick={() => savePesosAgenciaSync({})} style={{ background:"#3d0f0f", border:"none", color:"#fca5a5", borderRadius:"6px", padding:"7px 12px", cursor:"pointer", fontSize:"12px", fontFamily:"inherit" }}>🗑️ Borrar todo</button>
                   )}
                 </div>
               </div>
@@ -3471,7 +3519,7 @@ function App() {
               const agregar = () => {
                 const ag = nueva.trim().toUpperCase();
                 if (!ag || agenciasPrioritarias.includes(ag)) return;
-                saveAgenciasPrioritarias([...agenciasPrioritarias, ag]);
+                saveAgenciasPrioritariasSync([...agenciasPrioritarias, ag]);
                 setNueva("");
               };
               // Agencias disponibles de cargas actuales
@@ -3502,7 +3550,7 @@ function App() {
                           <div key={ag} style={{ display:"flex", alignItems:"center", gap:"10px", background:"#1A1A24", border:"1px solid #2A2A35", borderRadius:"8px", padding:"8px 14px" }}>
                             <svg width="22" height="22" viewBox="0 0 22 22" xmlns="http://www.w3.org/2000/svg"><circle cx="11" cy="11" r="11" fill="#ef4444"/><polygon points="12.5,3 7,12 11,12 9.5,19 15,10 11,10" fill="#fbbf24"/></svg>
                             <span style={{ color:"#F3F4F6", fontWeight:700, fontSize:"13px", flex:1 }}>{ag}</span>
-                            <button onClick={() => saveAgenciasPrioritarias(agenciasPrioritarias.filter((_,i)=>i!==idx))}
+                            <button onClick={() => saveAgenciasPrioritariasSync(agenciasPrioritarias.filter((_,i)=>i!==idx))}
                               style={{ background:"#3d0f0f", border:"none", color:"#fca5a5", borderRadius:"6px", padding:"4px 10px", cursor:"pointer", fontSize:"12px", fontFamily:"inherit" }}>🗑️ Quitar</button>
                           </div>
                         ))}
@@ -3517,7 +3565,7 @@ function App() {
                         {enCargas.map(ag => {
                           const yaEsta = agenciasPrioritarias.some(p => p.toUpperCase()===ag.toUpperCase());
                           return (
-                            <button key={ag} onClick={() => { if (!yaEsta) saveAgenciasPrioritarias([...agenciasPrioritarias, ag.toUpperCase()]); }}
+                            <button key={ag} onClick={() => { if (!yaEsta) saveAgenciasPrioritariasSync([...agenciasPrioritarias, ag.toUpperCase()]); }}
                               style={{ background: yaEsta ? "#14532d" : "#1A1A24", border:`1px solid ${yaEsta ? "#22C55E" : "#3F3F46"}`, borderRadius:"6px", color: yaEsta ? "#4ade80" : "#E5E7EB", padding:"4px 10px", cursor: yaEsta ? "default" : "pointer", fontSize:"11px", fontFamily:"inherit", fontWeight: yaEsta ? 700 : 400 }}>
                               {yaEsta ? "✓ " : ""}{ag}
                             </button>
@@ -3564,7 +3612,7 @@ function App() {
                             return { cod, desc, pck, uds };
                           }).filter(r => r.cod);
                           if (nuevos.length === 0) { alert("No se encontraron productos. Asegúrate de que el Excel tiene columnas: Código, Descripción, PCK/CJ, Uds/Pale"); return; }
-                          setProductos(nuevos);
+                          setProductosSync(nuevos);
                           const fecha = new Date().toLocaleDateString("es-ES", { day:"2-digit", month:"2-digit", year:"numeric", hour:"2-digit", minute:"2-digit" });
                           setCatalogoFecha(fecha);
                           alert("✓ Catálogo actualizado: " + nuevos.length + " productos cargados");
@@ -3602,9 +3650,9 @@ function App() {
                   if (!prodEdit.cod.trim()) return;
                   const existe = productos.findIndex(p => p.cod === prodEdit.cod.trim());
                   if (existe >= 0) {
-                    setProductos(prev => prev.map((p,i) => i===existe ? {...prodEdit, cod:prodEdit.cod.trim()} : p));
+                    setProductosSync(prev => prev.map((p,i) => i===existe ? {...prodEdit, cod:prodEdit.cod.trim()} : p));
                   } else {
-                    setProductos(prev => [...prev, {...prodEdit, cod:prodEdit.cod.trim()}]);
+                    setProductosSync(prev => [...prev, {...prodEdit, cod:prodEdit.cod.trim()}]);
                   }
                   setProdEdit({ cod:"", desc:"", pck:"", uds:"" });
                 }} style={{ background:"#10B981", border:"none", color:"#fff", borderRadius:"6px", padding:"7px 16px", cursor:"pointer", fontWeight:700, fontSize:"13px", fontFamily:"inherit", whiteSpace:"nowrap" }}>+ Añadir</button>
@@ -3631,7 +3679,7 @@ function App() {
                       <div style={{ display:"flex", gap:"4px", justifyContent:"flex-end" }}>
                         <button onClick={() => setProdEdit({cod:p.cod, desc:p.desc||"", pck:p.pck||"", uds:p.uds||""})}
                           style={{ background:"#27272A", border:"none", color:"#9CA3AF", borderRadius:"4px", padding:"3px 7px", cursor:"pointer", fontSize:"11px" }}>✏️</button>
-                        <button onClick={() => setProductos(prev => prev.filter((_,i)=>i!==idx))}
+                        <button onClick={() => setProductosSync(prev => prev.filter((_,i)=>i!==idx))}
                           style={{ background:"#3d0f0f", border:"none", color:"#fca5a5", borderRadius:"4px", padding:"3px 7px", cursor:"pointer", fontSize:"11px" }}>✕</button>
                       </div>
                     </div>
