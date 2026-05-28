@@ -1278,12 +1278,12 @@ function App() {
       const findCol = (names) => { for(const n of names){ const idx = header.findIndex(h => h && h.toLowerCase().includes(n.toLowerCase())); if(idx>=0) return idx; } return -1; };
       const iCliente    = findCol(["Nombre Destinatario","destinatario"]);
       const iTransp     = findCol(["Transp.","Transporte"]);
+      const iClp        = findCol(["Cl.P.","Cl. P.","ClP","tipo cliente"]);
       const iFecha      = findCol(["Fec.Pedido","Fecha Pedido","fec.pedido","fecha pedido"]);
       const iHora       = findCol(["Hora Carga","hora carga"]);
       const iFechaCarga = findCol(["Fech.Carga","Fecha Carga","fech.carga","fecha carga"]);
       const iHoraCarga  = findCol(["Hora Carga","hora carga"]);
       const iTramo      = findCol(["Tramo","tramo"]);
-      console.log("Cols - Cliente:",iCliente,"Transporte:",iTransp,"Fecha:",iFecha,"HoraCarga:",iHoraCarga,"FechaCarga:",iFechaCarga,"TotalCols:",header.length);
       // Find product code columns (4-digit numeric or letter codes)
       const prodCols = {};
       header.forEach((h, idx) => {
@@ -1295,6 +1295,7 @@ function App() {
       rows.slice(1).forEach(row => {
         const cliente    = row[iCliente]  ? String(row[iCliente]).trim()  : "";
         const transporte = row[iTransp]   ? String(row[iTransp]).trim()   : "";
+        const clp        = iClp >= 0 && row[iClp] ? String(row[iClp]).trim() : "";
         const rawFecha   = row[iFecha];
         const fecha      = (() => {
           if (!rawFecha) return "";
@@ -1325,12 +1326,14 @@ function App() {
         const tramo      = iTramo >= 0 && row[iTramo] ? String(row[iTramo]).trim() : "";
         // Guardar tramo por número de transporte
         if (transporte && tramo && !tramosMap[transporte]) tramosMap[transporte] = tramo;
+        // Guardar clp por transporte
+        if (transporte && clp && !tramosMap[transporte+"_clp"]) tramosMap[transporte+"_clp"] = clp;
         Object.entries(prodCols).forEach(([cod, ci]) => {
           const qty = row[ci];
           if (qty && qty !== 0) {
             if (!map[cod]) map[cod] = [];
             const qtyNum = typeof qty === "number" ? qty : parseFloat(String(qty).replace(",","."));
-            if (!isNaN(qtyNum) && qtyNum > 0) map[cod].push({ cliente, transporte, fecha, hora, fechaCarga, tramo, qty: qtyNum });
+            if (!isNaN(qtyNum) && qtyNum > 0) map[cod].push({ cliente, transporte, clp, fecha, hora, fechaCarga, tramo, qty: qtyNum });
           }
         });
       });
@@ -1530,7 +1533,26 @@ function App() {
                                 if (!byFecha[f]) byFecha[f] = [];
                                 byFecha[f].push(c);
                               });
-                              Object.values(byFecha).forEach(arr => arr.sort((a,b) => (a.hora||"").localeCompare(b.hora||"")));
+                              // Sort each group by tramo
+                              const tramoNum = (t) => {
+                                if (!t) return 9999;
+                                const mT = t.match(/^T(\d+)$/i);
+                                if (mT) return parseInt(mT[1]);
+                                const mH = t.match(/^(\d{2}):(\d{2})/);
+                                if (mH) return parseInt(mH[1]) * 100 + parseInt(mH[2]);
+                                return 9999;
+                              };
+                              Object.values(byFecha).forEach(arr => arr.sort((a,b) => tramoNum(a.tramo) - tramoNum(b.tramo)));
+                              // Sort dates: DD/MM/YYYY → YYYYMMDD
+                              const parseFechaSort = (f) => {
+                                const p = (f||"").split("/");
+                                if (p.length === 3) {
+                                  const yy = p[2].length === 4 ? p[2] : "20"+p[2];
+                                  return yy + p[1].padStart(2,"0") + p[0].padStart(2,"0");
+                                }
+                                return f || "99999999";
+                              };
+                              const fechasOrdenadas = Object.entries(byFecha).sort((a,b) => parseFechaSort(a[0]).localeCompare(parseFechaSort(b[0])));
                               return (
                                 <div>
                                   <div style={{ display:"flex", alignItems:"center", gap:"6px", marginBottom: filaExpandida ? "4px" : 0 }}>
@@ -1542,16 +1564,16 @@ function App() {
                                   </div>
                                   {filaExpandida && (
                                     <div style={{ display:"flex", gap:"6px", flexWrap:"nowrap", overflowX:"auto" }}>
-                                      {Object.entries(byFecha).sort((a,b)=>a[0].localeCompare(b[0])).map(([fecha, cs]) => (
+                                      {fechasOrdenadas.map(([fecha, cs]) => (
                                         <div key={fecha} style={{ minWidth:"180px", flex:"0 0 auto", background:"#1C1C24", border:"1px solid #44444F", borderRadius:"5px", padding:"3px 6px" }}>
                                           <div style={{ fontSize:"9px", color:"#c4b5fd", fontWeight:700, marginBottom:"3px", borderBottom:"1px solid #36363F", paddingBottom:"2px" }}>
                                             <span style={{ color:"#fcd34d" }}>{r.cod}</span> · {fecha}
                                           </div>
                                           {cs.map((c,ci) => (
-                                            <div key={ci} style={{ display:"grid", gridTemplateColumns:"28px 80px 52px 1fr", gap:"3px", alignItems:"baseline", fontSize:"10px", padding:"1px 0", borderBottom: ci < cs.length-1 ? "1px solid #2A2A35" : "none" }}>
+                                            <div key={ci} style={{ display:"grid", gridTemplateColumns:"28px 52px 52px 1fr", gap:"3px", alignItems:"baseline", fontSize:"10px", padding:"1px 0", borderBottom: ci < cs.length-1 ? "1px solid #2A2A35" : "none" }}>
                                               <span style={{ color:"#fcd34d", fontWeight:700 }}>{c.qty}</span>
-                                              <span style={{ color:"#9CA3AF", whiteSpace:"nowrap" }}>{c.hora}</span>
-                                              <span style={{ color:"#38BDF8", whiteSpace:"nowrap", fontWeight:600 }}>{c.transporte}</span>
+                                              <span style={{ color:"#38BDF8", whiteSpace:"nowrap", fontWeight:600, fontFamily:"'DM Mono',monospace" }}>{c.transporte}</span>
+                                              <span style={{ color:"#fbbf24", fontWeight:700, whiteSpace:"nowrap" }}>{c.clp||""}</span>
                                               <span style={{ color:"#F3F4F6", whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{c.cliente}</span>
                                             </div>
                                           ))}
@@ -2652,7 +2674,13 @@ function App() {
                 )}
               </div>
               <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", gap:"8px" }}>
-                <div style={{ color:"#F3F4F6", fontWeight:700, fontSize:"16px" }}>{c.cliente}</div>
+                <div style={{ display:"flex", alignItems:"center", gap:"8px" }}>
+                  <div style={{ color:"#F3F4F6", fontWeight:700, fontSize:"16px" }}>{c.cliente}</div>
+                  {(() => {
+                    const clp = Object.values(pm).flatMap(arr => arr).find(p => String(p.transporte||"").trim() === c.nTransp && p.clp)?.clp;
+                    return clp ? <span style={{ color:"#fbbf24", fontWeight:700, fontSize:"13px" }}>{clp}</span> : null;
+                  })()}
+                </div>
                 {c.poblacion && (
                   <div style={{ display:"flex", alignItems:"center", gap:"6px" }}>
                     <span style={{ color:"#D1D5DB", fontSize:"13px" }}>📍 {c.poblacion}</span>
@@ -2950,7 +2978,7 @@ function App() {
           peds.filter(p => String(p.transporte||"").trim()).forEach(p => {
             const nt = String(p.transporte||"").trim();
             if (!nt) return;
-            if (!byTransp[nt]) byTransp[nt] = { nTransp: nt, qty: 0, cliente: p.cliente||"", fechaCarga: p.fechaCarga||"", tramo: p.tramo||"", camion: getTransp(nt) };
+            if (!byTransp[nt]) byTransp[nt] = { nTransp: nt, qty: 0, cliente: p.cliente||"", clp: p.clp||"", fechaCarga: p.fechaCarga||"", tramo: p.tramo||"", camion: getTransp(nt) };
             byTransp[nt].qty += Number(p.qty)||0;
           });
 
@@ -2959,9 +2987,16 @@ function App() {
             const fa = parseFechaSort(a.fechaCarga);
             const fb = parseFechaSort(b.fechaCarga);
             if (fa !== fb) return fa.localeCompare(fb);
-            const ha = (a.tramo||"99:99").split("-")[0].trim();
-            const hb = (b.tramo||"99:99").split("-")[0].trim();
-            return ha.localeCompare(hb);
+            // Tramo puede ser "T18" o "08:00-09:00"
+            const tramoNum = (t) => {
+              if (!t) return 9999;
+              const mT = t.match(/^T(\d+)$/i);
+              if (mT) return parseInt(mT[1]);
+              const mH = t.match(/^(\d{2}):(\d{2})/);
+              if (mH) return parseInt(mH[1]) * 100 + parseInt(mH[2]);
+              return 9999;
+            };
+            return tramoNum(a.tramo) - tramoNum(b.tramo);
           });
 
         // DEBUG: mostrar primeros valores
@@ -3061,7 +3096,10 @@ function App() {
                           {/* Transporte */}
                           <div style={{ color: pasadoStock ? "#ef4444" : "#D946EF", fontWeight:700, fontSize:"12px", fontFamily:"'DM Mono',monospace" }}>{t.nTransp}</div>
                           {/* Destino */}
-                          <div style={{ color:"#E5E7EB", fontSize:"11px", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{t.cliente || "—"}</div>
+                          <div style={{ color:"#E5E7EB", fontSize:"11px", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
+                            {t.clp && <span style={{ color:"#fbbf24", fontWeight:700, marginRight:"5px", fontSize:"10px" }}>{t.clp}</span>}
+                            {t.cliente || "—"}
+                          </div>
                         </div>
                       );
                     })}
@@ -3102,6 +3140,7 @@ function App() {
               <rect x="24" y="42" width="12" height="14" rx="2" fill="#111116"/>
             </svg>
           <span style={{ fontSize:"20px", fontWeight:700, color:"#FFFFFF", letterSpacing:"0.06em" }}>DIARIO FÁBRICA</span>
+          <span style={{ fontSize:"10px", color:"#9CA3AF", fontWeight:600, letterSpacing:"0.04em", marginLeft:"4px", alignSelf:"flex-end", marginBottom:"2px" }}>v1.0</span>
           {/* Selector fábrica */}
           <div style={{ display:"flex", gap:"4px", marginLeft:"8px", background:"#1E1E2A", borderRadius:"10px", padding:"3px" }}>
             {[{id:"agrela",label:"🏭 A Grela",color:"#D946EF"},{id:"moras",label:"🏭 Moras",color:"#38BDF8"}].map(f => (
