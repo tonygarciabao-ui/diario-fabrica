@@ -1352,6 +1352,9 @@ function App() {
     const fac = FACTORIES.find(f => f.id === facId);
     const fd = dayData[fac.id] || {};
     const criticos = sortCriticos(fd.sapCriticos || []);
+    const hasSys = facId === "agrela";
+    const isEnCarga    = (c) => hasSys ? (c.systore === 3 && [2,3].includes(c.status)) : c.status === 3;
+    const isRegistrado = (c) => hasSys ? (c.status === 2 && [1,2].includes(c.systore)) : c.status === 2;
     // situacion colors: bg tint and text
     const situBg     = Object.fromEntries(situOpciones.map(s=>([s.label,s.bg])));
     const situTxt    = Object.fromEntries(situOpciones.map(s=>([s.label,s.txt])));
@@ -1569,14 +1572,25 @@ function App() {
                                           <div style={{ fontSize:"9px", color:"#c4b5fd", fontWeight:700, marginBottom:"3px", borderBottom:"1px solid #36363F", paddingBottom:"2px" }}>
                                             <span style={{ color:"#fcd34d" }}>{r.cod}</span> · {fecha}
                                           </div>
-                                          {cs.map((c,ci) => (
+                                          {cs.map((c,ci) => {
+                                            // Buscar estado del camión en cargasData
+                                            const camion = (cargasData[facId]?.todos||[]).find(t => String(t.nTransp).trim() === String(c.transporte).trim());
+                                            const dot = camion
+                                              ? isEnCarga(camion)    ? { color:"#4ade80", title:"En carga" }
+                                              : isRegistrado(camion) ? { color:"#ef4444", title:"Registrado" }
+                                              : null : null;
+                                            return (
                                             <div key={ci} style={{ display:"grid", gridTemplateColumns:"28px 52px 52px 1fr", gap:"3px", alignItems:"baseline", fontSize:"10px", padding:"1px 0", borderBottom: ci < cs.length-1 ? "1px solid #2A2A35" : "none" }}>
                                               <span style={{ color:"#fcd34d", fontWeight:700 }}>{c.qty}</span>
-                                              <span style={{ color:"#38BDF8", whiteSpace:"nowrap", fontWeight:600, fontFamily:"'DM Mono',monospace" }}>{c.transporte}</span>
+                                              <span style={{ display:"flex", alignItems:"center", gap:"3px", color:"#38BDF8", whiteSpace:"nowrap", fontWeight:600, fontFamily:"'DM Mono',monospace" }}>
+                                                {dot && <span style={{ width:"6px", height:"6px", borderRadius:"50%", background:dot.color, flexShrink:0, display:"inline-block" }} title={dot.title}/>}
+                                                {c.transporte}
+                                              </span>
                                               <span style={{ color:"#fbbf24", fontWeight:700, whiteSpace:"nowrap" }}>{c.clp||""}</span>
                                               <span style={{ color:"#F3F4F6", whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{c.cliente}</span>
                                             </div>
-                                          ))}
+                                            );
+                                          })}
                                         </div>
                                       ))}
                                     </div>
