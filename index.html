@@ -312,9 +312,25 @@ function App() {
   const [umbralAlerta, setUmbralAlerta] = useState(() => { try { return Number(localStorage.getItem("diario_umbral")) || 10; } catch(e) { return 10; } });
   const setUmbralAlertaSave = (v) => { const u = Math.max(1, Number(v)||10); setUmbralAlerta(u); try { localStorage.setItem("diario_umbral", u); } catch(e) {} };
   const [stocksSubTab, setStocksSubTab] = useState({ agrela:"rojo", moras:"rojo" }); // "all" | "agrela" | "moras"
-  const [zoom, setZoom] = useState(() => { try { return Number(localStorage.getItem("diario_zoom")) || 100; } catch(e) { return 100; } });
-  const setZoomSave = (v) => { const z = Math.min(150, Math.max(60, v)); setZoom(z); try { localStorage.setItem("diario_zoom", z); document.body.style.zoom = z + "%"; } catch(e) {} };
-  React.useEffect(() => { document.body.style.zoom = zoom + "%"; }, [zoom]);
+  const SECTIONS = ["transporte","planificacion","stocks","reparto","centros","almacen"];
+  const [zooms, setZooms] = useState(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem("diario_zooms") || "{}");
+      const defaults = {};
+      SECTIONS.forEach(s => defaults[s] = saved[s] || 100);
+      return defaults;
+    } catch(e) { return Object.fromEntries(SECTIONS.map(s => [s, 100])); }
+  });
+  const zoom = zooms[activeSection] || 100;
+  const setZoomSave = (v) => {
+    const z = Math.min(150, Math.max(60, v));
+    setZooms(prev => {
+      const next = {...prev, [activeSection]: z};
+      try { localStorage.setItem("diario_zooms", JSON.stringify(next)); } catch(e) {}
+      return next;
+    });
+  };
+  React.useEffect(() => { document.body.style.zoom = zoom + "%"; }, [zoom, activeSection]);
   const [clientesExpandidos, setClientesExpandidos] = useState({});
   const toggleClientesFila = (key) => setClientesExpandidos(p => ({...p, [key]: p[key]===false ? true : false}));
   const [showPlan, setShowPlan] = useState(true);
@@ -1572,20 +1588,23 @@ function App() {
                                           <div style={{ fontSize:"9px", color:"#c4b5fd", fontWeight:700, marginBottom:"3px", borderBottom:"1px solid #36363F", paddingBottom:"2px" }}>
                                             <span style={{ color:"#fcd34d" }}>{r.cod}</span> · {fecha}
                                           </div>
-                                          {cs.map((c,ci) => {
-                                            // Buscar estado del camión en cargasData
+                                          {cs.sort((a,b) => {
+                                            const ta = a.tramo||""; const tb = b.tramo||"";
+                                            const mA = ta.match(/^T(\d+)$/i); const mB = tb.match(/^T(\d+)$/i);
+                                            if (mA && mB) return parseInt(mA[1]) - parseInt(mB[1]);
+                                            return ta.localeCompare(tb);
+                                          }).map((c,ci) => {
                                             const camion = (cargasData[facId]?.todos||[]).find(t => String(t.nTransp).trim() === String(c.transporte).trim());
                                             const dot = camion
                                               ? isEnCarga(camion)    ? { label:"CAR", color:"#4ade80", title:"En carga" }
                                               : isRegistrado(camion) ? { label:"REG", color:"#ef4444", title:"Registrado" }
                                               : null : null;
                                             return (
-                                            <div key={ci} style={{ display:"grid", gridTemplateColumns:"28px 52px 52px 1fr", gap:"3px", alignItems:"baseline", fontSize:"10px", padding:"1px 4px", borderRadius:"3px", background: dot ? (dot.label==="CAR" ? "#0f5530" : "#5c1010") : "transparent", borderBottom: ci < cs.length-1 ? "1px solid #2A2A35" : "none" }}>
+                                            <div key={ci} style={{ display:"grid", gridTemplateColumns:"28px 40px 30px 52px 40px 1fr", gap:"3px", alignItems:"baseline", fontSize:"10px", padding:"1px 4px", borderRadius:"3px", background: dot ? (dot.label==="CAR" ? "#0f5530" : "#5c1010") : "transparent", borderBottom: ci < cs.length-1 ? "1px solid #2A2A35" : "none" }}>
                                               <span style={{ color:"#fcd34d", fontWeight:700 }}>{c.qty}</span>
-                                              <span style={{ display:"flex", alignItems:"center", gap:"3px", color:"#38BDF8", whiteSpace:"nowrap", fontWeight:600, fontFamily:"'DM Mono',monospace" }}>
-                                                {dot && <span style={{ fontSize:"8px", fontWeight:900, color:dot.color, lineHeight:1, flexShrink:0 }} title={dot.title}>{dot.label}</span>}
-                                                {c.transporte}
-                                              </span>
+                                              <span style={{ color:"#ffffff", fontWeight:700, whiteSpace:"nowrap", fontSize:"10px" }}>{c.tramo||""}</span>
+                                              <span style={{ fontSize:"8px", fontWeight:900, color: dot ? dot.color : "transparent", lineHeight:1 }}>{dot ? dot.label : ""}</span>
+                                              <span style={{ color:"#38BDF8", whiteSpace:"nowrap", fontWeight:600, fontSize:"10px" }}>{c.transporte}</span>
                                               <span style={{ color:"#fbbf24", fontWeight:700, whiteSpace:"nowrap" }}>{c.clp||""}</span>
                                               <span style={{ color:"#F3F4F6", whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{c.cliente}</span>
                                             </div>
@@ -3126,10 +3145,15 @@ function App() {
                       const palesCalc = getPales(t.qty);
                       const esAgotamiento = agotaEn === idx;
                       const pasadoStock = agotaEn !== null && idx >= agotaEn;
+                      const camionEstado = (cargasData[fac.id]?.todos||[]).find(c => String(c.nTransp).trim() === String(t.nTransp).trim());
+                      const hasSys = fac.id === "agrela";
+                      const enCarga    = camionEstado && (hasSys ? (camionEstado.systore === 3 && [2,3].includes(camionEstado.status)) : camionEstado.status === 3);
+                      const registrado = camionEstado && !enCarga && (hasSys ? (camionEstado.status === 2 && [1,2].includes(camionEstado.systore)) : camionEstado.status === 2);
+                      const rowBg = pasadoStock ? "#1a0808" : idx%2===0 ? "#16161C" : "#1A1A24";
                       return (
                         <div key={t.nTransp} style={{
                           display:"grid", gridTemplateColumns:"68px 60px 90px 110px 90px 1fr", gap:"0", padding:"2px 12px",
-                          background: pasadoStock ? "#1a0808" : idx%2===0 ? "#16161C" : "#1A1A24",
+                          background: rowBg,
                           borderBottom:"1px solid #1E1E2A", alignItems:"center",
                           borderLeft: pasadoStock ? "3px solid #ef4444" : "3px solid #22C55E"
                         }}>
@@ -3156,7 +3180,11 @@ function App() {
                           {/* Tramo horario */}
                           <div style={{ color:"#38BDF8", fontSize:"11px", fontFamily:"'DM Mono',monospace" }}>{t.tramo||"—"}</div>
                           {/* Transporte */}
-                          <div style={{ color: pasadoStock ? "#ef4444" : "#D946EF", fontWeight:700, fontSize:"12px", fontFamily:"'DM Mono',monospace" }}>{t.nTransp}</div>
+                          <div style={{ display:"flex", alignItems:"center", gap:"4px", color: pasadoStock ? "#ef4444" : "#D946EF", fontWeight:700, fontSize:"12px", fontFamily:"'DM Mono',monospace" }}>
+                            {enCarga    && <span style={{ fontSize:"8px", fontWeight:900, color:"#4ade80", lineHeight:1 }}>CAR</span>}
+                            {registrado && <span style={{ fontSize:"8px", fontWeight:900, color:"#ef4444", lineHeight:1 }}>REG</span>}
+                            {t.nTransp}
+                          </div>
                           {/* Destino */}
                           <div style={{ color:"#E5E7EB", fontSize:"11px", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
                             {t.clp && <span style={{ color:"#fbbf24", fontWeight:700, marginRight:"5px", fontSize:"10px" }}>{t.clp}</span>}
