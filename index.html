@@ -312,9 +312,25 @@ function App() {
   const [umbralAlerta, setUmbralAlerta] = useState(() => { try { return Number(localStorage.getItem("diario_umbral")) || 10; } catch(e) { return 10; } });
   const setUmbralAlertaSave = (v) => { const u = Math.max(1, Number(v)||10); setUmbralAlerta(u); try { localStorage.setItem("diario_umbral", u); } catch(e) {} };
   const [stocksSubTab, setStocksSubTab] = useState({ agrela:"rojo", moras:"rojo" }); // "all" | "agrela" | "moras"
-  const [zoom, setZoom] = useState(() => { try { return Number(localStorage.getItem("diario_zoom")) || 100; } catch(e) { return 100; } });
-  const setZoomSave = (v) => { const z = Math.min(150, Math.max(60, v)); setZoom(z); try { localStorage.setItem("diario_zoom", z); document.body.style.zoom = z + "%"; } catch(e) {} };
-  React.useEffect(() => { document.body.style.zoom = zoom + "%"; }, [zoom]);
+  const SECTIONS = ["transporte","planificacion","stocks","reparto","almacen"];
+  const [zooms, setZooms] = useState(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem("diario_zooms") || "{}");
+      const defaults = {};
+      SECTIONS.forEach(s => defaults[s] = saved[s] || 100);
+      return defaults;
+    } catch(e) { return Object.fromEntries(SECTIONS.map(s => [s, 100])); }
+  });
+  const zoom = zooms[activeSection] || 100;
+  const setZoomSave = (v) => {
+    const z = Math.min(150, Math.max(60, v));
+    setZooms(prev => {
+      const next = {...prev, [activeSection]: z};
+      try { localStorage.setItem("diario_zooms", JSON.stringify(next)); } catch(e) {}
+      return next;
+    });
+  };
+  React.useEffect(() => { document.body.style.zoom = zoom + "%"; }, [zoom, activeSection]);
   const [clientesExpandidos, setClientesExpandidos] = useState({});
   const toggleClientesFila = (key) => setClientesExpandidos(p => ({...p, [key]: p[key]===false ? true : false}));
   const [showPlan, setShowPlan] = useState(true);
@@ -2852,12 +2868,12 @@ function App() {
                           <div style={{ color:"#9CA3AF", fontSize:"11px" }}>{t.fechaCarga||"—"}</div>
                           {/* Tramo horario */}
                           <div style={{ color:"#38BDF8", fontSize:"11px", fontFamily:"'DM Mono',monospace" }}>{t.tramo||"—"}</div>
-                          {/* Badge CAR/REG columna propia */}
-                          <div style={{ fontSize:"8px", fontWeight:900, color: enCargaR?"#ef4444":registradoR?"#4ade80":"transparent", lineHeight:1 }}>
-                            {enCargaR?"CAR":registradoR?"REG":""}
+                          {/* Transporte + badge */}
+                          <div style={{ display:"flex", alignItems:"center", gap:"4px", color: pasadoStock ? "#ef4444" : "#D946EF", fontWeight:700, fontSize:"12px", fontFamily:"'DM Mono',monospace" }}>
+                            {enCargaR    && <span style={{ fontSize:"8px", fontWeight:900, color:"#ef4444" }}>CAR</span>}
+                            {registradoR && <span style={{ fontSize:"8px", fontWeight:900, color:"#4ade80" }}>REG</span>}
+                            {t.nTransp}
                           </div>
-                          {/* Transporte */}
-                          <div style={{ color: pasadoStock ? "#ef4444" : "#D946EF", fontWeight:700, fontSize:"12px", fontFamily:"'DM Mono',monospace" }}>{t.nTransp}</div>
                           {/* Destino */}
                           <div style={{ color:"#E5E7EB", fontSize:"11px", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
                             {t.clp && <span style={{ color:"#fbbf24", fontWeight:700, marginRight:"5px", fontSize:"10px" }}>{t.clp}</span>}
