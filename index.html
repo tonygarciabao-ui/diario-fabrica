@@ -726,7 +726,7 @@ function App() {
       const conSystore = unique.filter(c => c.systore !== null).length;
       const hasSystore = fid === "agrela" && iSystore >= 0 && conSystore > unique.length * 0.3;
       const isEnCarga    = (c) => hasSystore ? (c.systore === 3 && [2,3].includes(c.status)) : c.status === 3;
-      const isFinCarga   = (c) => hasSystore ? (c.status >= 4 && c.systore === 3) : c.status >= 4;
+      const isFinCarga   = (c) => c.status >= 4;
       const isRegistrado = (c) => hasSystore ? (c.status === 2 && [1,2].includes(c.systore)) : c.status === 2;
       const isPendiente  = (c) => hasSystore ? (c.status === 1 && [1,2].includes(c.systore)) : [0,1].includes(c.status);
       const enCarga      = unique.filter(c => isEnCarga(c));
