@@ -1947,7 +1947,7 @@ function App() {
                       return (
                         <tr key={ti} onClick={() => {
                           const next = {...enLlenado};
-                          if (isLlenando) delete next[llKey];
+                          if (isLlenando) next[llKey] = false;
                           else next[llKey] = true;
                           setEnLlenado(next);
                           fbSync({ enLlenado: next });
