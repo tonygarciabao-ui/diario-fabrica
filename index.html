@@ -332,6 +332,7 @@ function App() {
   };
   React.useEffect(() => { document.body.style.zoom = zoom + "%"; }, [zoom, activeSection]);
   const [clientesExpandidos, setClientesExpandidos] = useState({});
+  const [expandirTodo, setExpandirTodo] = useState(true);
   const toggleClientesFila = (key) => setClientesExpandidos(p => ({...p, [key]: p[key]===false ? true : false}));
   const [showPlan, setShowPlan] = useState(true);
   const [paleInputs, setPaleInputs] = useState({});
@@ -341,6 +342,11 @@ function App() {
 
   const [planData, setPlanData] = useState({ agrela:[], moras:[] });
   const [planFecha, setPlanFecha] = useState({ agrela:"", moras:"" });
+  const [planDataManana, setPlanDataManana] = useState({ agrela:[], moras:[] });
+  const [planFechaManana, setPlanFechaManana] = useState({ agrela:"", moras:"" });
+  const [cargasDataManana, setCargasDataManana] = useState({agrela:null, moras:null});
+  const [cargasFechaManana, setCargasFechaManana] = useState({agrela:"", moras:""});
+  const [diaView, setDiaView] = useState("hoy"); // "hoy" | "manana"
   const [enLlenado, setEnLlenado] = useState({});
   const [cargasData, setCargasData] = useState({agrela:null, moras:null});
   const [cargasFecha, setCargasFecha] = useState({agrela:"", moras:""});
@@ -514,7 +520,7 @@ function App() {
 
   // ── Renderers ─────────────────────────────────────────────────────
   // ── Planificación Envasado XLSX parser ──────────────────────────
-  const parsePlanXlsx = (arrayBuffer) => {
+  const parsePlanXlsx = (arrayBuffer, esManana=false) => {
     try {
       const wb = XLSX.read(arrayBuffer, { type:"array", cellDates: true });
       const ws = wb.Sheets[wb.SheetNames[0]];
@@ -610,9 +616,16 @@ function App() {
         }
       }
 
-      setPlanData(prev => ({ ...prev, [activeFab]: rows }));
-      setPlanFecha(prev => ({ ...prev, [activeFab]: new Date().toLocaleTimeString("es-ES",{hour:"2-digit",minute:"2-digit"}) }));
-      showSaved("✓ Planificación cargada: " + rows.length + " turnos");
+      const hora = new Date().toLocaleTimeString("es-ES",{hour:"2-digit",minute:"2-digit"});
+      if (esManana) {
+        setPlanDataManana(prev => ({ ...prev, [activeFab]: rows }));
+        setPlanFechaManana(prev => ({ ...prev, [activeFab]: hora }));
+        showSaved("✓ Plan Mañana: " + rows.length + " turnos");
+      } else {
+        setPlanData(prev => ({ ...prev, [activeFab]: rows }));
+        setPlanFecha(prev => ({ ...prev, [activeFab]: hora }));
+        showSaved("✓ Planificación cargada: " + rows.length + " turnos");
+      }
     } catch(e) {
       console.error("parsePlanXlsx error:", e);
       showSaved("⚠️ Error al leer planificación: " + e.message);
@@ -620,10 +633,21 @@ function App() {
   };
 
   // Get planning entries for a given cod
-  const getPlanForCod = (cod) => (planData[activeFab] || []).filter(p => p.cod === cod);
+  // Planificación fusionada: archivo de hoy + archivo de mañana, sin duplicados y ordenada
+  const planMezclado = (fid) => {
+    const todas = [...(planData[fid]||[]), ...(planDataManana[fid]||[])];
+    const vistos = new Set(); const out = [];
+    todas.forEach(p => {
+      const k = `${p.grupo}|${p.cod}|${p.dia}|${p.hi}|${p.hf}`;
+      if (!vistos.has(k)) { vistos.add(k); out.push(p); }
+    });
+    const ord = (p) => { const d=(p.dia||"").split("/"); return (d[1]||"99")+(d[0]||"99")+(p.hi||"99:99"); };
+    return out.sort((a,b) => ord(a).localeCompare(ord(b)));
+  };
+  const getPlanForCod = (cod) => planMezclado(activeFab).filter(p => p.cod === cod);
 
   // ── Cargas XLSX parser ──────────────────────────────────────────
-  const parseCargasXlsx = (arrayBuffer, fid, esAyer=false, merge=false) => {
+  const parseCargasXlsx = (arrayBuffer, fid, esAyer=false, merge=false, esManana=false) => {
     try {
       const wb = XLSX.read(arrayBuffer, { type:"array" });
       const ws = wb.Sheets[wb.SheetNames[0]];
@@ -765,6 +789,10 @@ function App() {
         });
         setCargasFecha(prev => ({ ...prev, [fid]: new Date().toLocaleTimeString("es-ES",{hour:"2-digit",minute:"2-digit"}) }));
         showSaved(`✓ +${unique.length} camiones añadidos`);
+      } else if (esManana) {
+        setCargasDataManana(prev => ({ ...prev, [fid]: { total, pendientes, registrados, enCarga, finCarga, pendientes_list, todos: unique } }));
+        setCargasFechaManana(prev => ({ ...prev, [fid]: new Date().toLocaleTimeString("es-ES",{hour:"2-digit",minute:"2-digit"}) }));
+        showSaved("✓ Cargas Mañana: " + total + " camiones");
       } else {
         setCargasData(prev => ({ ...prev, [fid]: { total, pendientes, registrados, enCarga, finCarga, pendientes_list, todos: unique } }));
         setCargasFecha(prev => ({ ...prev, [fid]: new Date().toLocaleTimeString("es-ES",{hour:"2-digit",minute:"2-digit"}) }));
@@ -774,8 +802,21 @@ function App() {
   };
 
   // ── Auto-detector de tipo de Excel ────────────────────────────────
-  const detectarYParsear = (arrayBuffer, fid) => {
+  const detectarYParsear = (arrayBuffer, fid, filename="") => {
     try {
+      const fn = filename.toLowerCase();
+      const esManana = /ma.?ana|tomorrow|manana|next/i.test(fn);
+
+      // Planificación mañana
+      if (esManana && /plan/i.test(fn)) {
+        parsePlanXlsx(arrayBuffer, true);
+        return "📅 Plan Mañana";
+      }
+      // Cargas mañana
+      if (esManana && /carga/i.test(fn)) {
+        parseCargasXlsx(arrayBuffer, fid, false, false, true);
+        return "🚛 Cargas Mañana";
+      }
       const wb = XLSX.read(arrayBuffer, { type:"array" });
       const ws = wb.Sheets[wb.SheetNames[0]];
       const rows = XLSX.utils.sheet_to_json(ws, { header:1, defval:null, raw:false });
@@ -1064,7 +1105,7 @@ function App() {
                     buffers[idx] = ev.target.result;
                     pending--;
                     if (pending === 0) {
-                      const tipos = buffers.map(buf => detectarYParsear(buf, fac.id));
+                      const tipos = buffers.map(buf => detectarYParsear(buf, fac.id, files[buffers.indexOf(buf)]?.name||""));
                       showSaved(`✅ ${files.length} archivos cargados: ${tipos.join(", ")}`);
                     }
                   };
@@ -1086,6 +1127,18 @@ function App() {
               }} />
           </label>
           {cargasAyerFecha[fac.id] && <span style={{ fontSize:"11px", color:"#9CA3AF" }}>Ayer: {cargasAyerFecha[fac.id]}</span>}
+          <label style={{ background:"#2D2D3A", color:"#9CA3AF", fontWeight:700, border:"1px solid #3F3F46", borderRadius:"8px", padding:"7px 14px", cursor:"pointer", display:"inline-block", fontSize:"12px", fontFamily:"inherit" }}>
+            🌅 Cargas Mañana
+            <input type="file" accept=".xlsx,.xls" style={{ display:"none" }}
+              onChange={e => {
+                const file = e.target.files[0]; if (!file) return;
+                const reader = new FileReader();
+                reader.onload = ev => parseCargasXlsx(ev.target.result, fac.id, false, false, true);
+                reader.readAsArrayBuffer(file);
+                e.target.value = "";
+              }} />
+          </label>
+          {cargasFechaManana[fac.id] && <span style={{ fontSize:"11px", color:"#9CA3AF" }}>Mañana: {cargasFechaManana[fac.id]}</span>}
 
           {/* Leyenda colores */}
           <div style={{ display:"flex", gap:"8px", alignItems:"center", marginLeft:"8px", background:"#16161C", border:"1px solid #2A2A35", borderRadius:"8px", padding:"5px 12px", flexWrap:"wrap" }}>
@@ -1263,8 +1316,8 @@ function App() {
       const b = toNum(bloqMap[col]);
       const t = toNum(transMap[col]);
       const d = toNum(disponMap[col]);
-      allStocks2[cod] = { pedidos:p, fisico:f, dispon:d, bloq:b };
-      return { cod, pedidos: p, fisico: f, dispon: d, bloq: b, trans: t, diff: f - b - p };
+      allStocks2[cod] = { pedidos:p, fisico:f, dispon:d, bloq:b, trans:t };
+      return { cod, pedidos: p, fisico: f, dispon: d, bloq: b, trans: t, diff: d - p };
     }).filter(r => r.diff <= 0 && r.pedidos > 0)
       .sort((a,b) => { const aNum=/^\d+$/.test(a.cod), bNum=/^\d+$/.test(b.cod); if(aNum&&!bNum)return -1; if(!aNum&&bNum)return 1; if(aNum&&bNum)return parseInt(a.cod)-parseInt(b.cod); return a.cod.localeCompare(b.cod); });
 
@@ -1368,7 +1421,44 @@ function App() {
   const renderStocksFac = (facId) => {
     const fac = FACTORIES.find(f => f.id === facId);
     const fd = dayData[fac.id] || {};
-    const criticos = sortCriticos(fd.sapCriticos || []);
+    // Planificación: siempre el conjunto de ambos archivos (hoy + mañana), sin duplicados
+    const planActiva = { agrela: planMezclado("agrela"), moras: planMezclado("moras") };
+    const cargasActivas = diaView === "manana" ? cargasDataManana
+      : diaView === "todo" ? (() => {
+          const merge = (fid) => {
+            const a = cargasData[fid]?.todos || [];
+            const b = cargasDataManana[fid]?.todos || [];
+            if (!a.length && !b.length) return cargasData[fid];
+            const seen = new Set(); const todos = [];
+            [...a, ...b].forEach(c => { const k = String(c.nTransp||"").trim(); if (k && !seen.has(k)) { seen.add(k); todos.push(c); } });
+            return { ...(cargasData[fid]||{}), todos };
+          };
+          return { agrela: merge("agrela"), moras: merge("moras") };
+        })()
+      : cargasData;
+    // Recalcular pedidos por día usando Fech.Carga del pedidosMap
+    const criticos = (() => {
+      const pmAll = fd.pedidosMap || {};
+      const smAll = fd.sapStockMap || {};
+      if (!Object.keys(pmAll).length) return sortCriticos(fd.sapCriticos || []);
+      const mananaD = new Date(); mananaD.setDate(mananaD.getDate()+1);
+      const fMan = String(mananaD.getDate()).padStart(2,"0")+"/"+String(mananaD.getMonth()+1).padStart(2,"0")+"/"+mananaD.getFullYear();
+      const cods = new Set([...Object.keys(smAll), ...Object.keys(pmAll)]);
+      const rows = [];
+      cods.forEach(cod => {
+        const entradas = pmAll[cod] || [];
+        const pedHoy = entradas.reduce((a,c) => (c.fechaCarga||"") === fMan ? a : a + (c.qty||0), 0);
+        const pedMan = entradas.reduce((a,c) => (c.fechaCarga||"") === fMan ? a + (c.qty||0) : a, 0);
+        const s = smAll[cod] || {};
+        const disponRaw = s.dispon ?? 0;
+        // Mañana parte del stock que sobra tras las cargas de hoy
+        const pedDia = diaView === "manana" ? pedMan : diaView === "todo" ? (pedHoy + pedMan) : pedHoy;
+        const base   = diaView === "manana" ? (disponRaw - pedHoy) : disponRaw;
+        if (pedDia <= 0) return;
+        rows.push({ cod, pedidos: Math.round(pedDia*100)/100, fisico: s.fisico??0, dispon: Math.round(base*100)/100, bloq: s.bloq??0, trans: s.trans??0, diff: Math.round((base-pedDia)*100)/100 });
+      });
+      return sortCriticos(rows);
+    })();
     const hasSys = facId === "agrela";
     const isEnCarga    = (c) => hasSys ? (c.systore === 3 && [2,3].includes(c.status)) : c.status === 3;
     const isRegistrado = (c) => hasSys ? (c.status === 2 && [1,2].includes(c.systore)) : c.status === 2;
@@ -1380,6 +1470,16 @@ function App() {
       <div style={{ display:"flex", flexDirection:"column", height:"calc(100vh - 90px)" }}>
         {/* Header row: SAP import - FIJO */}
         <div style={{ display:"flex", alignItems:"center", gap:"14px", padding:"10px 4px", flexWrap:"wrap", flexShrink:0, background:"#111116", borderBottom:"1px solid #1E1E2A", position:"sticky", top:0, zIndex:10 }}>
+          {/* Toggle Hoy / Mañana */}
+          <div style={{ display:"flex", gap:"4px", background:"#1A1A24", borderRadius:"8px", padding:"3px" }}>
+            {[{id:"hoy",label:"📅 Hoy"},{id:"manana",label:"🌅 Mañana"},{id:"todo",label:"📊 Todo"}].map(d => (
+              <button key={d.id} onClick={()=>setDiaView(d.id)}
+                style={{ background:diaView===d.id?fac.color:"transparent", border:"none", borderRadius:"6px", color:diaView===d.id?"#111116":"#9CA3AF", padding:"4px 12px", fontSize:"11px", fontWeight:700, cursor:"pointer", fontFamily:"inherit" }}>
+                {d.label}
+                {d.id==="manana"&&cargasFechaManana[facId]&&<span style={{ marginLeft:"4px", fontSize:"9px", opacity:0.8 }}>{cargasFechaManana[facId]}</span>}
+              </button>
+            ))}
+          </div>
           <label style={{ background:"#FFFFFF", color:"#111116", fontWeight:800, border:"none", borderRadius:"8px", padding:"7px 16px", cursor:"pointer", display:"inline-block", fontSize:"12px", fontFamily:"inherit" }}>
             📂 CARGAR STOCKS
             <input type="file" accept=".xlsx,.xls" style={{ display:"none" }}
@@ -1406,7 +1506,15 @@ function App() {
 
 
           {fd.sapFecha && <span style={{ fontSize:"11px", color:"#F9FAFB" }}>Cargado {fd.sapFecha}</span>}
-          {criticos.length > 0 && <span style={{ fontSize:"11px", color:"#EF4444", fontWeight:700 }}>⚠️ {criticos.length} referencias críticas</span>}
+          {criticos.filter(r => r.diff < 0).length > 0 && <span style={{ fontSize:"11px", color:"#EF4444", fontWeight:700 }}>⚠️ {criticos.filter(r => r.diff < 0).length} referencias críticas</span>}
+          {criticos.length > 0 && (
+            <button onClick={() => { setExpandirTodo(v => !v); setClientesExpandidos({}); }}
+              title={expandirTodo ? "Contraer todos los clientes" : "Desplegar todos los clientes"}
+              style={{ background:"#16161C", border:"2px solid #2A2A35", borderRadius:"8px", padding:"6px 14px", cursor:"pointer", fontFamily:"inherit", color:"#9CA3AF", fontWeight:600, fontSize:"12px", display:"flex", alignItems:"center", gap:"6px" }}>
+              <span style={{ color:"#A78BFA", fontSize:"11px" }}>{expandirTodo ? "▾" : "▸"}</span>
+              {expandirTodo ? "Contraer todo" : "Desplegar todo"}
+            </button>
+          )}
           {/* Sub-pestañas */}
           {criticos.length > 0 && (() => {
             const rojos  = criticos.filter(r => r.diff < 0).length;
@@ -1418,7 +1526,6 @@ function App() {
                 {[
                   { id:"rojo",  label:"Negativo",       count:rojos,           dot:"#ef4444", color:"#ef4444", bg:"#1a0505", border:"#ef4444" },
                   { id:"azul",  label:"Justo",          count:justos,          dot:"#38BDF8", color:"#38BDF8", bg:"#021018", border:"#38BDF8" },
-                  { id:"ambar", label:`< ${umbralAlerta} pal.`, count:ambars,  dot:"#D946EF", color:"#D946EF", bg:"#140a00", border:"#D946EF" },
                   { id:"todos", label:"Todos",          count:criticos.length, dot:"#9CA3AF", color:"#9CA3AF", bg:"#111116", border:"#9CA3AF" },
                 ].map(t => {
                   const active = tab===t.id;
@@ -1478,10 +1585,13 @@ function App() {
                   }).map((r,i) => {
                   const diff = r.diff;
                   const llenado = fd.sapLlenado?.[r.cod] || {};
-                  const plan = getPlanForCod(r.cod);
-                  const todayStr2 = (() => { const d = new Date(); return `${String(d.getDate()).padStart(2,"0")}/${String(d.getMonth()+1).padStart(2,"0")}`; })();
-                  const planHoy = plan.filter(p => p.dia === todayStr2);
-                  const planShow = planHoy.length > 0 ? [planHoy[0]] : plan.length > 0 ? [plan[0]] : [];
+                  const plan = (planActiva[activeFab] || []).filter(p => p.cod === r.cod);
+                  const dm = new Date(); dm.setDate(dm.getDate()+1);
+                  const ddHoy = (() => { const d = new Date(); return `${String(d.getDate()).padStart(2,"0")}/${String(d.getMonth()+1).padStart(2,"0")}`; })();
+                  const ddMan = `${String(dm.getDate()).padStart(2,"0")}/${String(dm.getMonth()+1).padStart(2,"0")}`;
+                  const diaBuscado = diaView === "manana" ? ddMan : ddHoy;
+                  const planDia = plan.filter(p => p.dia === diaBuscado);
+                  const planShow = planDia.length > 0 ? [planDia[0]] : plan.length > 0 ? [plan[0]] : [];
                   const situ = llenado.situacion || "";
                   const updateLlenado = (field, val) => {
                     const updated = { ...dayData, [fac.id]: { ...dayData[fac.id], sapLlenado: { ...(dayData[fac.id].sapLlenado||{}), [r.cod]: { ...(dayData[fac.id].sapLlenado?.[r.cod]||{}), [field]: val } } } };
@@ -1497,16 +1607,16 @@ function App() {
                       <td style={{ padding:"4px 6px", color: situ ? situTxt[situ] : fac.color, fontWeight:700, textAlign:"right" }}>{r.cod}</td>
                       <td style={{ padding:"4px 6px", color:"#FFFFFF", textAlign:"right" }}>{r.pedidos}</td>
                       <td style={{ padding:"4px 6px", color:"#FFFFFF", textAlign:"right" }}>{r.fisico}</td>
-                      <td style={{ padding:"4px 6px", color:"#FFFFFF", textAlign:"right" }}>{r.dispon}</td>
+                      <td style={{ padding:"4px 6px", color: r.dispon < 0 ? "#EF4444" : "#FFFFFF", fontWeight: r.dispon < 0 ? 700 : 400, textAlign:"right" }}>{r.dispon}</td>
                       <td style={{ padding:"4px 6px", color: r.bloq>0?"#F97316":"#52525B", textAlign:"right" }}>{r.bloq||"—"}</td>
                       <td style={{ padding:"4px 6px", color: r.trans>0?"#3B82F6":"#52525B", textAlign:"right" }}>{r.trans||"—"}</td>
-                      <td style={{ padding:"4px 6px", color:"#EF4444", fontWeight:700, textAlign:"right" }}>{(diff??0).toFixed(2)}</td>
+                      <td style={{ padding:"4px 6px", color: (diff??0) < 0 ? "#EF4444" : (diff??0) > 0 ? "#4ade80" : "#38BDF8", fontWeight:700, textAlign:"right" }}>{(diff??0).toFixed(2)}</td>
 
                         <td style={{ padding:"4px 6px", verticalAlign:"top", width:"70px", minWidth:"70px" }}>
                           {planShow.length > 0 && planShow.map((p,pi) => (
                             <div key={pi} onClick={() => {
                               const gStr = String(p.grupo||"").replace(/\s+/g," ").trim();
-                              const entries = (planData[activeFab]||[]).filter(e => String(e.grupo||"").replace(/\s+/g," ").trim() === gStr);
+                              const entries = (planActiva[activeFab]||[]).filter(e => String(e.grupo||"").replace(/\s+/g," ").trim() === gStr);
                               setPlanPopup({ grupo: gStr, entries, cod: r.cod });
                             }} style={{ background:"#0a3d1f", border:"1px solid #22c55e", borderRadius:"4px", padding:"3px 8px", marginBottom:"3px", display:"inline-flex", gap:"8px", alignItems:"center", cursor:"pointer" }}
                               title="Ver planificación completa del grupo">
@@ -1554,9 +1664,19 @@ function App() {
                               // si showClientes=false, por defecto contraída
                               const filaExpandida = clientesExpandidos[filaKey] !== undefined
                                 ? clientesExpandidos[filaKey]
-                                : true;
+                                : expandirTodo;
                               const byFecha = {};
+                              // Calcular fecha hoy y mañana en DD/MM/YYYY para filtrar por FECHA DE CARGA
+                              const hoyDate = new Date();
+                              const mananaDate = new Date(); mananaDate.setDate(mananaDate.getDate()+1);
+                              const fmtDate = (d) => String(d.getDate()).padStart(2,"0")+"/"+String(d.getMonth()+1).padStart(2,"0")+"/"+d.getFullYear();
+                              const fechaHoy = fmtDate(hoyDate);
+                              const fechaManana = fmtDate(mananaDate);
                               clientes.forEach(c => {
+                                const fc = c.fechaCarga || "";
+                                // Filtrar por fecha de CARGA según diaView
+                                if (diaView === "hoy" && fc === fechaManana) return;
+                                if (diaView === "manana" && fc !== fechaManana) return;
                                 const f = c.fecha || "Sin fecha";
                                 if (!byFecha[f]) byFecha[f] = [];
                                 byFecha[f].push(c);
@@ -1603,7 +1723,9 @@ function App() {
                                             if(mA&&mB)return parseInt(mA[1])-parseInt(mB[1]);
                                             return ta.localeCompare(tb);
                                           }).map((c,ci) => {
-                                            const camion = (cargasData[facId]?.todos||[]).find(t => String(t.nTransp).trim() === String(c.transporte).trim());
+                                            const tramosMapFb = dayData[facId]?.tramosMap || {};
+                                            const tramo = c.tramo || tramosMapFb[c.transporte] || "";
+                                            const camion = (cargasActivas[facId]?.todos||[]).find(t => String(t.nTransp).trim() === String(c.transporte).trim());
                                             const status = camion
                                               ? isEnCarga(camion)    ? { label:"CAR", color:"#ef4444", bg:"#5c1010" }
                                               : isRegistrado(camion) ? { label:"REG", color:"#4ade80", bg:"#0f5530" }
@@ -1611,7 +1733,7 @@ function App() {
                                             return (
                                             <div key={ci} style={{ display:"grid", gridTemplateColumns:"28px 40px 30px 52px 40px 1fr", gap:"3px", alignItems:"baseline", fontSize:"10px", padding:"1px 4px", borderRadius:"3px", background:status?status.bg:"transparent", borderBottom: ci < cs.length-1 ? "1px solid #2A2A35" : "none" }}>
                                               <span style={{ color:"#fcd34d", fontWeight:700 }}>{c.qty}</span>
-                                              <span style={{ color:"#fff", fontWeight:700, fontSize:"10px" }}>{c.tramo||""}</span>
+                                              <span style={{ color:"#fff", fontWeight:700, fontSize:"10px" }}>{tramo}</span>
                                               <span style={{ fontSize:"8px", fontWeight:900, color:status?status.color:"transparent", lineHeight:1 }}>{status?status.label:""}</span>
                                               <span style={{ color:"#38BDF8", whiteSpace:"nowrap", fontWeight:600, fontSize:"10px" }}>{c.transporte}</span>
                                               <span style={{ color:"#fbbf24", fontWeight:700, whiteSpace:"nowrap" }}>{c.clp||""}</span>
@@ -1903,19 +2025,31 @@ function App() {
               e.target.value = "";
             }} />
         </label>
-        {planFecha[activeFab] && <span style={{ fontSize:"11px", color:"#6ee7a0" }}>Cargado {planFecha[activeFab]} · {planData[activeFab].length} turnos</span>}
+        {planFecha[activeFab] && <span style={{ fontSize:"11px", color:"#6ee7a0" }}>Cargado {planFecha[activeFab]} · {planMezclado(activeFab).length} turnos</span>}
+        <label style={{ ...C.btn("#0EA5E9"), cursor:"pointer", display:"inline-block", fontSize:"12px" }}>
+          🌅 PLAN MAÑANA
+          <input type="file" accept=".xlsx,.xls" style={{ display:"none" }}
+            onChange={e => {
+              const file = e.target.files[0]; if (!file) return;
+              const reader = new FileReader();
+              reader.onload = ev => parsePlanXlsx(ev.target.result, true);
+              reader.readAsArrayBuffer(file);
+              e.target.value = "";
+            }} />
+        </label>
+        {planFechaManana[activeFab] && <span style={{ fontSize:"11px", color:"#38BDF8" }}>Mañana: {planFechaManana[activeFab]} · {planDataManana[activeFab].length} turnos</span>}
       </div>
 
-      {planData[activeFab].length === 0 && (
+      {planMezclado(activeFab).length === 0 && (
         <div style={{ color:"#606070", textAlign:"center", padding:"60px", fontSize:"14px" }}>
           Carga el archivo Excel de planificación de envasado
         </div>
       )}
 
-      {planData[activeFab].length > 0 && (() => {
+      {planMezclado(activeFab).length > 0 && (() => {
         // Group by grupo
         const byGrupo = {};
-        planData[activeFab].forEach(p => {
+        planMezclado(activeFab).forEach(p => {
           if (!byGrupo[p.grupo]) byGrupo[p.grupo] = [];
           byGrupo[p.grupo].push(p);
         });
@@ -1926,7 +2060,12 @@ function App() {
 
         return (
           <div style={{ display:"flex", flexDirection:"column", gap:"12px" }}>
-            {Object.entries(byGrupo).map(([grupo, turnos]) => (
+            {Object.entries(byGrupo).sort((a,b) => {
+              const n = (g) => { const m = String(g).match(/(\d+)/); return m ? parseInt(m[1]) : 9999; };
+              const na = n(a[0]), nb = n(b[0]);
+              if (na !== nb) return na - nb;
+              return String(a[0]).localeCompare(String(b[0]));
+            }).map(([grupo, turnos]) => (
               <div key={grupo} style={{ background:"#1A1A1F", border:"1px solid #44444F", borderRadius:"8px", overflow:"hidden" }}>
                 <div style={{ background:"#202028", padding:"8px 14px", fontWeight:700, color:"#10B981", fontSize:"12px", letterSpacing:"0.06em" }}>
                   {grupo}
@@ -1936,18 +2075,18 @@ function App() {
                     <tr style={{ background:"#16161C" }}>
                       {[
                         {h:"Día",w:"42px"},{h:"Código",w:"58px"},{h:"",w:"100px"},{h:"Descripción",w:"auto"},{h:"Inicio",w:"70px"},{h:"Fin",w:"70px"}
-                      ].map(({h,w},hi) => <th key={hi} style={{ padding:"5px 8px", textAlign:"left", color:"#9CA3AF", fontWeight:600, fontSize:"11px", width:w }}>{h}</th>)}
+                      ].map(({h,w}) => <th key={h} style={{ padding:"5px 8px", textAlign:"left", color:"#9CA3AF", fontWeight:600, fontSize:"11px", width:w }}>{h}</th>)}
                     </tr>
                   </thead>
                   <tbody>
                     {turnos.map((t,ti) => {
                       const esCritico = criticosCodes.has(t.cod);
-                      const llKey = `${activeFab}_${String(grupo).replace(/\s+/g," ").trim()}_${ti}`;
+                      const llKey = `${activeFab}_${grupo}_${ti}`;
                       const isLlenando = enLlenado[llKey];
                       return (
                         <tr key={ti} onClick={() => {
                           const next = {...enLlenado};
-                          if (isLlenando) next[llKey] = false;
+                          if (isLlenando) delete next[llKey];
                           else next[llKey] = true;
                           setEnLlenado(next);
                           fbSync({ enLlenado: next });
@@ -2693,8 +2832,52 @@ function App() {
     const fd = dayData[fac.id] || {};
     const pm = fd.pedidosMap || {};
     const sm = fd.sapStockMap || {};
-    const criticos = sortCriticos(fd.sapCriticos || []);
-    const cargas = cargasData[fac.id]?.todos || [];
+    // Fecha de mañana para filtrar por Fech.Carga
+    const mananaD = new Date(); mananaD.setDate(mananaD.getDate()+1);
+    const fMan = String(mananaD.getDate()).padStart(2,"0")+"/"+String(mananaD.getMonth()+1).padStart(2,"0")+"/"+mananaD.getFullYear();
+    const hoyD = new Date();
+    const fHoy = String(hoyD.getDate()).padStart(2,"0")+"/"+String(hoyD.getMonth()+1).padStart(2,"0")+"/"+hoyD.getFullYear();
+    const filtraDia = (p) => {
+      const fc = p.fechaCarga || "";
+      if (diaView === "hoy" && fc === fMan) return false;
+      if (diaView === "manana" && fc !== fMan) return false;
+      return true;
+    };
+    // Stock de partida por formato según el día (mañana descuenta lo de hoy)
+    const baseMap = {};
+    const criticos = (() => {
+      if (!Object.keys(pm).length) return sortCriticos(fd.sapCriticos || []);
+      const cods = new Set([...Object.keys(sm), ...Object.keys(pm)]);
+      const rows = [];
+      cods.forEach(cod => {
+        const entradas = pm[cod] || [];
+        const pedHoy = entradas.reduce((a,c) => (c.fechaCarga||"") === fMan ? a : a + (c.qty||0), 0);
+        const pedMan = entradas.reduce((a,c) => (c.fechaCarga||"") === fMan ? a + (c.qty||0) : a, 0);
+        const disponRaw = sm[cod]?.dispon ?? 0;
+        const pedDia = diaView === "manana" ? pedMan : diaView === "todo" ? (pedHoy + pedMan) : pedHoy;
+        const base   = diaView === "manana" ? (disponRaw - pedHoy) : disponRaw;
+        baseMap[cod] = Math.round(base*100)/100;
+        if (pedDia <= 0) return;
+        const dif = Math.round((base-pedDia)*100)/100;
+        if (dif > 0) return; // solo formatos en rotura de stock
+        rows.push({ cod, pedidos: Math.round(pedDia*100)/100, dispon: baseMap[cod], diff: dif });
+      });
+      return sortCriticos(rows);
+    })();
+    const cargasActivas = diaView === "manana" ? cargasDataManana
+      : diaView === "todo" ? (() => {
+          const merge = (fid) => {
+            const a = cargasData[fid]?.todos || [];
+            const b = cargasDataManana[fid]?.todos || [];
+            if (!a.length && !b.length) return cargasData[fid];
+            const seen = new Set(); const todos = [];
+            [...a, ...b].forEach(c => { const k = String(c.nTransp||"").trim(); if (k && !seen.has(k)) { seen.add(k); todos.push(c); } });
+            return { ...(cargasData[fid]||{}), todos };
+          };
+          return { agrela: merge("agrela"), moras: merge("moras") };
+        })()
+      : cargasData;
+    const cargas = cargasActivas[fac.id]?.todos || [];
 
     const transpMap = {};
     cargas.forEach(c => {
@@ -2753,9 +2936,24 @@ function App() {
 
     return (
       <div style={{ padding:"0 4px" }}>
+        {/* Toggle Hoy / Mañana */}
+        <div style={{ display:"flex", alignItems:"center", gap:"6px", padding:"8px 0 10px 0" }}>
+          <div style={{ display:"flex", gap:"4px", background:"#1A1A24", borderRadius:"8px", padding:"3px" }}>
+            {[{id:"hoy",label:"📅 Hoy"},{id:"manana",label:"🌅 Mañana"},{id:"todo",label:"📊 Todo"}].map(d => (
+              <button key={d.id} onClick={()=>setDiaView(d.id)}
+                style={{ background:diaView===d.id?fac.color:"transparent", border:"none", borderRadius:"6px", color:diaView===d.id?"#111116":"#9CA3AF", padding:"4px 14px", fontSize:"11px", fontWeight:700, cursor:"pointer", fontFamily:"inherit" }}>
+                {d.label}
+                {d.id==="manana"&&cargasFechaManana[fac.id]&&<span style={{ marginLeft:"4px", fontSize:"9px", opacity:0.8 }}>{cargasFechaManana[fac.id]}</span>}
+              </button>
+            ))}
+          </div>
+          {diaView==="manana"&&!cargasDataManana[fac.id]&&(
+            <span style={{ fontSize:"11px", color:"#F59E0B" }}>⚠️ Carga "Cargas Mañana" con el botón múltiple</span>
+          )}
+        </div>
         {criticos.map(({ cod, diff }) => {
-          const stockDisp = parseFloat(sm[cod]?.dispon ?? sm[cod]?.disponible ?? 0);
-          const peds = pm[cod] || [];
+          const stockDisp = baseMap[cod] !== undefined ? baseMap[cod] : parseFloat(sm[cod]?.dispon ?? sm[cod]?.disponible ?? 0);
+          const peds = (pm[cod] || []).filter(filtraDia);
           const transpList = sortTransp(peds.filter(p => String(p.transporte||"").trim()));
 
           const getPales = (qty) => Math.round(qty * 100) / 100;
@@ -2810,7 +3008,7 @@ function App() {
               {/* Header formato */}
               <div style={{ background:"#1E1E28", padding:"10px 16px", display:"flex", alignItems:"center", gap:"16px", flexWrap:"wrap" }}>
                 <span style={{ color: fac.color, fontWeight:900, fontSize:"16px", fontFamily:"'DM Mono',monospace" }}>{cod}</span>
-                <span style={{ color:"#9CA3AF", fontSize:"12px" }}>Stock disp: <span style={{ color:"#4ade80", fontWeight:700 }}>{stockDisp.toFixed(2)} pal.</span></span>
+                <span style={{ color:"#9CA3AF", fontSize:"12px" }}>Stock disp: <span style={{ color: stockDisp < 0 ? "#EF4444" : "#4ade80", fontWeight:700 }}>{stockDisp.toFixed(2)} pal.</span></span>
                 <span style={{ color:"#9CA3AF", fontSize:"12px" }}>Total pedido: <span style={{ color:"#fca5a5", fontWeight:700 }}>{totalPalesReal.toFixed(2)} pal.</span></span>
                 <span style={{ color:"#9CA3AF", fontSize:"12px" }}>Stock final: <span style={{ color: stockFinal < 0 ? "#ef4444" : "#4ade80", fontWeight:700 }}>{stockFinal.toFixed(2)} pal.</span></span>
                 {getPlanForCod(cod).length > 0 && (
@@ -2851,17 +3049,32 @@ function App() {
                       const palesCalc = getPales(t.qty);
                       const esAgotamiento = agotaEn === idx;
                       const pasadoStock = agotaEn !== null && idx >= agotaEn;
-                      const camionEstado = (cargasData[fac.id]?.todos||[]).find(c => String(c.nTransp).trim() === String(t.nTransp).trim());
+                      const camionEstado = cargas.find(c => String(c.nTransp).trim() === String(t.nTransp).trim());
                       const hasSys = fac.id === "agrela";
                       const enCargaR    = camionEstado && (hasSys ? (camionEstado.systore === 3 && [2,3].includes(camionEstado.status)) : camionEstado.status === 3);
                       const registradoR = camionEstado && !enCargaR && (hasSys ? (camionEstado.status === 2 && [1,2].includes(camionEstado.systore)) : camionEstado.status === 2);
                       const statusBg = enCargaR ? "#5c1010" : registradoR ? "#0f5530" : null;
+                      // Separador de día (solo en vista Todo)
+                      const fcAct = t.fechaCarga || "";
+                      const fcPrev = idx > 0 ? (transpOrden[idx-1].fechaCarga || "") : null;
+                      const nuevoDia = diaView === "todo" && fcAct !== fcPrev;
+                      const esManana = fcAct === fMan;
+                      const dLbl = esManana ? "MAÑANA" : fcAct === fHoy ? "HOY" : (fcAct || "SIN FECHA");
+                      const dCol = esManana ? "#38BDF8" : fcAct === fHoy ? "#4ade80" : "#9CA3AF";
                       return (
-                        <div key={t.nTransp} style={{
+                        <React.Fragment key={t.nTransp}>
+                        {nuevoDia && (
+                          <div style={{ display:"flex", alignItems:"center", gap:"8px", padding:"4px 12px", background:"#0D0D12", borderTop:`2px solid ${dCol}44`, borderBottom:"1px solid #1E1E2A" }}>
+                            <span style={{ color:dCol, fontWeight:900, fontSize:"10px", letterSpacing:"0.08em" }}>{dLbl}</span>
+                            <span style={{ color:"#52525B", fontSize:"10px" }}>{fcAct}</span>
+                            <span style={{ flex:1, height:"1px", background:`${dCol}22` }}/>
+                          </div>
+                        )}
+                        <div style={{
                           display:"grid", gridTemplateColumns:"68px 60px 90px 110px 90px 1fr", gap:"0", padding:"2px 12px",
                           background: pasadoStock ? "#1a0808" : statusBg || (idx%2===0 ? "#16161C" : "#1A1A24"),
                           borderBottom:"1px solid #1E1E2A", alignItems:"center",
-                          borderLeft: pasadoStock ? "3px solid #ef4444" : "3px solid #22C55E"
+                          borderLeft: pasadoStock ? "3px solid #ef4444" : `3px solid ${diaView==="todo" ? dCol : "#22C55E"}`
                         }}>
                           {/* Pales real (input) */}
                           <div style={{ textAlign:"right", paddingRight:"8px" }}>
@@ -2897,6 +3110,7 @@ function App() {
                             {t.cliente || "—"}
                           </div>
                         </div>
+                        </React.Fragment>
                       );
                     })}
                     {agotaEn !== null && (
@@ -2944,10 +3158,10 @@ function App() {
                     const llKey = `${activeFab}_${planPopup.grupo}_${i}`;
                     const isLlenando = enLlenado[llKey];
                     const bg = isLlenando ? "#0f3d1a" : esCod ? "#1a0f00" : i%2===0 ? "#16161C" : "#1A1A24";
-                    const borderColor = isLlenando ? "#4ade80" : "transparent";
+                    const borderColor = isLlenando ? "#4ade80" : esCod ? "#3F3F46" : "transparent";
                     return (
                     <tr key={i} style={{ borderBottom:"1px solid #1E1E2A", background: bg, borderLeft: `3px solid ${borderColor}` }}>
-                      <td style={{ padding:"7px 10px", color:"#9CA3AF", whiteSpace:"nowrap" }}>{e.dia}</td>
+                      <td style={{ padding:"7px 10px", color:"#9CA3AF", fontWeight:400, whiteSpace:"nowrap" }}>{e.dia}</td>
                       <td style={{ padding:"7px 10px", color: esCod ? "#D946EF" : "#FFFFFF", fontWeight: esCod ? 700 : 400, fontFamily:"'DM Mono',monospace" }}>{e.cod}</td>
                       <td style={{ padding:"7px 10px", color: isLlenando ? "#d9f99d" : "#E5E7EB", fontWeight: isLlenando ? 700 : 400 }}>
                         {isLlenando && <span style={{ background:"#166534", color:"#4ade80", borderRadius:"4px", padding:"1px 7px", fontSize:"10px", fontWeight:700, marginRight:"6px" }}>🟢 EN LLENADO</span>}
