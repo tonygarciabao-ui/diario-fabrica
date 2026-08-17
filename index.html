@@ -576,21 +576,22 @@ function App() {
       const rows = [];
 
       for (let r = 0; r <= range.e.r; r++) {
-        const col0 = getVal(r, 0);
-        const s0 = cleanStr(col0);
+        // Leer toda la fila una vez
+        const rowVals = [];
+        for (let c = 0; c <= range.e.c; c++) rowVals.push(cleanStr(getVal(r, c)));
+        const rowRaw = [];
+        for (let c = 0; c <= range.e.c; c++) rowRaw.push(getVal(r, c));
 
-        // Detectar cabecera de grupo: "Grupo: EG01 | Hora inicio: 21:30"
-        if (s0 && /^Grupo:\s*EG\d+/i.test(s0)) {
-          const m = s0.match(/EG(\d+)/i);
-          currentGroup = m ? `GRUPO ${parseInt(m[1])}` : s0;
-          // Reset índices para este grupo
+        // Detectar cabecera de grupo "Grupo: EG01 | Hora inicio: 21:30" EN CUALQUIER COLUMNA
+        const celdaGrupo = rowVals.find(v => /Grupo:\s*EG\d+/i.test(v));
+        if (celdaGrupo) {
+          const m = celdaGrupo.match(/EG(\d+)/i);
+          currentGroup = m ? `GRUPO ${parseInt(m[1])}` : celdaGrupo;
           iCod = -1; iDesc = -1; iHi = -1; iHf = -1;
           continue;
         }
 
-        // Detectar fila de cabeceras de columnas
-        const rowVals = [];
-        for (let c = 0; c <= range.e.c; c++) rowVals.push(cleanStr(getVal(r, c)));
+        // Detectar fila de cabeceras de columnas (Código / No Orden en cualquier posición)
         if (rowVals.includes("Código") || rowVals.includes("No Orden")) {
           iCod  = rowVals.findIndex(v => v === "Código");
           iDesc = rowVals.findIndex(v => v === "Descripción");
@@ -601,12 +602,12 @@ function App() {
 
         // Fila de datos
         if (!currentGroup || iCod < 0) continue;
-        const rawCod = getVal(r, iCod);
+        const rawCod = rowRaw[iCod];
         if (!rawCod) continue;
         const cod  = normCode(rawCod);
-        const desc = iDesc >= 0 ? cleanStr(getVal(r, iDesc)) : "";
-        const hiRaw = iHi >= 0 ? serialToHoraDia(getVal(r, iHi)) : { hora:"", dia:"" };
-        const hfRaw = iHf >= 0 ? serialToHoraDia(getVal(r, iHf)) : { hora:"", dia:"" };
+        const desc = iDesc >= 0 ? cleanStr(rowRaw[iDesc]) : "";
+        const hiRaw = iHi >= 0 ? serialToHoraDia(rowRaw[iHi]) : { hora:"", dia:"" };
+        const hfRaw = iHf >= 0 ? serialToHoraDia(rowRaw[iHf]) : { hora:"", dia:"" };
         const hi    = hiRaw.hora;
         const hf    = hfRaw.hora;
         const dia   = hiRaw.dia;
@@ -823,9 +824,11 @@ function App() {
       const header = (rows[0] || []).map(h => h ? String(h).trim() : "");
       const headerStr = header.join("|").toLowerCase();
       const cell00 = ws["A1"] ? String(ws["A1"].v || "").trim().toLowerCase() : "";
+      // Buscar "Grupo: EGxx" en las primeras filas y cualquier columna (por si viene desplazado)
+      const hayGrupo = rows.slice(0, 8).some(row => (row||[]).some(c => c && /grupo\s*:\s*eg\d+/i.test(String(c))));
 
-      // Planificación: tiene "Grupo:" en A1 o columnas Código/Inicio Orden
-      if (/grupo\s*:/i.test(cell00) || header.some(h => /inicio orden/i.test(h)) || header.some(h => /^código$/i.test(h) && header.some(h2 => /hora inicio/i.test(h2)))) {
+      // Planificación: tiene "Grupo:" (en cualquier celda) o columnas Código/Inicio Orden
+      if (hayGrupo || /grupo\s*:/i.test(cell00) || header.some(h => /inicio orden/i.test(h)) || header.some(h => /^código$/i.test(h) && header.some(h2 => /hora inicio/i.test(h2)))) {
         parsePlanXlsx(arrayBuffer);
         return "📅 Planificación";
       }
